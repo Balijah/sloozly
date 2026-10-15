@@ -1,0 +1,201 @@
+// ===========================================
+// Sloozly Database Schema
+// ===========================================
+// Designed for MVP with extensibility for MMF features
+// ===========================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================
+// User Management
+// ===========================================
+
+model User {
+  id        String   @id @default(cuid())
+  firebaseUid String @unique @map("firebase_uid")
+  email     String   @unique
+  
+  // Profile (expandable for MMF)
+  displayName String? @map("display_name")
+  timezone    String  @default("America/New_York")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  bankAccount BankAccount?
+  alarms      Alarm[]
+  penalties   Penalty[]
+  
+  @@map("users")
+}
+
+// ===========================================
+// Bank Account (Plaid Integration)
+// ===========================================
+
+model BankAccount {
+  id        String   @id @default(cuid())
+  userId    String   @unique @map("user_id")
+  
+  // Plaid tokens (encrypted at rest)
+  plaidAccessToken  String  @map("plaid_access_token")
+  plaidItemId       String  @map("plaid_item_id")
+  plaidAccountId    String  @map("plaid_account_id")
+  
+  // Display info (from Plaid)
+  institutionName   String  @map("institution_name")
+  accountName       String  @map("account_name")
+  accountMask       String  @map("account_mask") // Last 4 digits
+  
+  // Stripe for ACH transfers
+  stripeCustomerId      String? @map("stripe_customer_id")
+  stripeBankAccountId   String? @map("stripe_bank_account_id")
+  
+  // Status tracking
+  status            BankAccountStatus @default(ACTIVE)
+  failureCount      Int               @default(0) @map("failure_count")
+  lastFailureReason String?           @map("last_failure_reason")
+  
+  // Timestamps
+  linkedAt    DateTime  @default(now()) @map("linked_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("bank_accounts")
+}
+
+enum BankAccountStatus {
+  ACTIVE
+  NEEDS_RELINK
+  DISABLED
+}
+
+// ===========================================
+// Alarms
+// ===========================================
+
+model Alarm {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  
+  // Time configuration
+  hour      Int      // 0-23
+  minute    Int      // 0-59
+  
+  // MVP: Simple enabled toggle
+  // MMF: Will expand for repeat days, labels, etc.
+  isEnabled Boolean  @default(true) @map("is_enabled")
+  label     String?  // Optional label (MMF feature, but schema-ready)
+  
+  // MMF: Repeat schedule (stored as JSON for flexibility)
+  // null = one-time alarm, array = days to repeat [0=Sun, 1=Mon, ... 6=Sat]
+  repeatDays Int[]   @default([]) @map("repeat_days")
+  
+  // MMF: Skip penalty days
+  skipPenalty Boolean @default(false) @map("skip_penalty")
+  
+  // Penalty configuration
+  basePenaltyAmount Int @default(500) @map("base_penalty_amount") // In cents ($5.00)
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  penalties Penalty[]
+  
+  @@map("alarms")
+}
+
+// ===========================================
+// Penalties (Snooze Records)
+// ===========================================
+
+model Penalty {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  alarmId   String   @map("alarm_id")
+  
+  // Penalty details
+  amount        Int              // In cents
+  snoozeNumber  Int              @map("snooze_number") // 1st snooze, 2nd snooze, etc.
+  status        PenaltyStatus    @default(PENDING)
+  
+  // Payment tracking
+  stripeTransferId  String?  @map("stripe_transfer_id")
+  failureReason     String?  @map("failure_reason")
+  
+  // MMF: Charity destination
+  charityId         String?  @map("charity_id")
+  
+  // Timestamps
+  triggeredAt   DateTime  @default(now()) @map("triggered_at")
+  processedAt   DateTime? @map("processed_at")
+  
+  // Relations
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alarm Alarm @relation(fields: [alarmId], references: [id], onDelete: Cascade)
+  
+  @@map("penalties")
+}
+
+enum PenaltyStatus {
+  PENDING     // Just triggered, not yet processed
+  PROCESSING  // ACH transfer initiated
+  COMPLETED   // Successfully transferred
+  FAILED      // Transfer failed (logged, no retry)
+}
+
+// ===========================================
+// MMF: Charity Partners (Schema ready, not used in MVP)
+// ===========================================
+
+model Charity {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  logoUrl     String? @map("logo_url")
+  website     String?
+  isActive    Boolean @default(true) @map("is_active")
+  
+  // Stripe destination for transfers
+  stripeAccountId String @map("stripe_account_id")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  @@map("charities")
+}
+
+// ===========================================
+// Audit Log (for compliance and debugging)
+// ===========================================
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  
+  action    String   // e.g., "BANK_LINKED", "PENALTY_TRIGGERED", "TRANSFER_FAILED"
+  details   Json?    // Additional context
+  ipAddress String?  @map("ip_address")
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
