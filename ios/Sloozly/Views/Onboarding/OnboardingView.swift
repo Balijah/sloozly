@@ -6,8 +6,8 @@ struct OnboardingView: View {
     
     private let pages: [(image: String, title: String, description: String)] = [
         ("alarm.fill", "Wake Up On Time", "Set alarms that actually make you get up. No more endless snoozing."),
-        ("dollarsign.circle.fill", "Real Consequences", "Hit snooze? That's $5 from your bank account. Each snooze doubles the cost."),
-        ("heart.fill", "Money Goes to Good", "Your penalty money goes to charity. Wake up and do good.")
+        ("dollarsign.circle.fill", "Real Consequences", "Hit snooze? Sloozly charges a penalty to your linked bank account."),
+        ("bolt.fill", "Build Better Habits", "Real stakes mean real motivation. Wake up on time, every time.")
     ]
     
     var body: some View {

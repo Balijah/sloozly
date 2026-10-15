@@ -1,20 +1,23 @@
+import Stripe from 'stripe';
 import { stripe } from '../config/stripe.js';
 import { plaidService } from './plaid.service.js';
 import { ExternalServiceError, PaymentError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
-
-// ===========================================
-// Stripe Service
-// ===========================================
 
 interface CreateCustomerResult {
   customerId: string;
   bankAccountId: string;
 }
 
+interface CreatePaymentResult {
+  paymentIntentId: string;
+  status: string;
+}
+
 class StripeService {
   /**
-   * Create a Stripe customer with a bank account from Plaid
+   * Create a Stripe customer and attach a bank account via Plaid processor token.
+   * Uses the Plaid-to-Stripe processor flow (supported in Plaid sandbox).
    */
   async createCustomerWithBankAccount(
     email: string,
@@ -22,13 +25,11 @@ class StripeService {
     plaidAccountId: string
   ): Promise<CreateCustomerResult> {
     try {
-      // Get Stripe bank account token from Plaid
       const stripeBankToken = await plaidService.createStripeBankAccountToken(
         plaidAccessToken,
         plaidAccountId
       );
 
-      // Create Stripe customer
       const customer = await stripe.customers.create({
         email,
         description: 'Sloozly user',
@@ -37,10 +38,9 @@ class StripeService {
         },
       });
 
-      // Attach bank account to customer
       const bankAccount = await stripe.customers.createSource(customer.id, {
         source: stripeBankToken,
-      });
+      }) as Stripe.BankAccount;
 
       logger.info(`Stripe customer created: ${customer.id}`);
 
@@ -55,108 +55,126 @@ class StripeService {
   }
 
   /**
-   * Create an ACH charge (debit) from a customer's bank account
-   * Returns the charge ID for tracking
+   * Create a PaymentIntent for an ACH debit.
+   * The occurrenceId+snoozeNumber is used as the Stripe idempotency key
+   * to prevent duplicate charges for the same snooze event.
+   *
+   * Create without confirming so the caller can persist its ID before any debit.
    */
-  async createACHCharge(
+  async createACHPaymentIntent(
     customerId: string,
     bankAccountId: string,
     amountCents: number,
     description: string,
+    idempotencyKey: string,
     metadata: Record<string, string> = {}
-  ): Promise<{
-    chargeId: string;
-    status: string;
-  }> {
+  ): Promise<CreatePaymentResult> {
     try {
-      const charge = await stripe.charges.create({
-        amount: amountCents,
-        currency: 'usd',
-        customer: customerId,
-        source: bankAccountId,
-        description,
-        metadata: {
-          ...metadata,
-          app: 'sloozly',
+      const paymentIntent = await stripe.paymentIntents.create(
+        {
+          amount: amountCents,
+          currency: 'usd',
+          customer: customerId,
+          payment_method: bankAccountId,
+          payment_method_types: ['us_bank_account'],
+          description,
+          metadata: {
+            ...metadata,
+            app: 'sloozly',
+          },
         },
-        // ACH charges are not instant - they process over 1-5 business days
-        // Status will be 'pending' initially
-      });
+        { idempotencyKey }
+      );
 
-      logger.info(`ACH charge created: ${charge.id} for $${(amountCents / 100).toFixed(2)}`);
+      return { paymentIntentId: paymentIntent.id, status: paymentIntent.status };
+    } catch (error: unknown) {
+      logger.error('Stripe createACHPaymentIntent error:', error);
 
-      return {
-        chargeId: charge.id,
-        status: charge.status,
-      };
-    } catch (error: any) {
-      logger.error('Stripe createACHCharge error:', error);
-      
-      // Handle specific Stripe errors
-      if (error.type === 'StripeCardError') {
-        throw new PaymentError(
-          error.message || 'Payment failed',
-          error.code
-        );
-      }
-      
-      if (error.type === 'StripeInvalidRequestError') {
-        throw new PaymentError(
-          'Invalid payment request',
-          error.code
-        );
+      if (error instanceof Stripe.errors.StripeError) {
+        if (error.code === 'idempotency_key_in_use') {
+          throw new ExternalServiceError('Stripe', 'Payment request in progress; retry safely');
+        }
+        if (error.type === 'StripeInvalidRequestError' || error.type === 'StripeCardError') {
+          throw new PaymentError(error.message || 'Payment failed', error.code);
+        }
       }
 
-      throw new PaymentError('Payment processing failed');
+      throw new ExternalServiceError('Stripe', 'Unable to create payment; retry safely');
     }
   }
 
-  /**
-   * Get charge status (for checking if ACH transfer completed)
-   */
-  async getChargeStatus(chargeId: string): Promise<{
+  async confirmACHPaymentIntent(
+    paymentIntentId: string,
+    idempotencyKey: string,
+    acceptance: { acceptedAt: Date; ipAddress: string; userAgent: string }
+  ): Promise<CreatePaymentResult> {
+    try {
+      let intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      if (intent.status === 'requires_confirmation') {
+        intent = await stripe.paymentIntents.confirm(paymentIntentId, {
+          setup_future_usage: 'off_session',
+          mandate_data: {
+            customer_acceptance: {
+              type: 'online',
+              accepted_at: Math.floor(acceptance.acceptedAt.getTime() / 1000),
+              online: { ip_address: acceptance.ipAddress, user_agent: acceptance.userAgent },
+            },
+          },
+        }, { idempotencyKey: `${idempotencyKey}_confirm` });
+      }
+      return { paymentIntentId: intent.id, status: intent.status };
+    } catch (error) {
+      // A timeout is not a decline: keep the reservation until Stripe is reconciled.
+      throw new ExternalServiceError('Stripe', 'Unable to confirm payment; retry safely');
+    }
+  }
+
+  async getPaymentIntentStatus(paymentIntentId: string): Promise<{
     status: string;
-    failureCode?: string;
-    failureMessage?: string;
+    failureCode: string | null;
+    failureMessage: string | null;
   }> {
     try {
-      const charge = await stripe.charges.retrieve(chargeId);
+      const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
 
       return {
-        status: charge.status,
-        failureCode: charge.failure_code || undefined,
-        failureMessage: charge.failure_message || undefined,
+        status: pi.status,
+        failureCode: (pi.last_payment_error?.code as string) ?? null,
+        failureMessage: pi.last_payment_error?.message ?? null,
       };
     } catch (error) {
-      logger.error('Stripe getChargeStatus error:', error);
+      logger.error('Stripe getPaymentIntentStatus error:', error);
       throw new ExternalServiceError('Stripe', 'Failed to get payment status');
     }
   }
 
-  /**
-   * Delete a customer (when user deletes account)
-   */
   async deleteCustomer(customerId: string): Promise<void> {
     try {
       await stripe.customers.del(customerId);
       logger.info(`Stripe customer deleted: ${customerId}`);
     } catch (error) {
       logger.error('Stripe deleteCustomer error:', error);
-      // Don't throw - this is cleanup
     }
   }
 
-  /**
-   * Remove a bank account from a customer
-   */
   async removeBankAccount(customerId: string, bankAccountId: string): Promise<void> {
     try {
       await stripe.customers.deleteSource(customerId, bankAccountId);
       logger.info(`Bank account removed from customer: ${customerId}`);
     } catch (error) {
       logger.error('Stripe removeBankAccount error:', error);
-      // Don't throw - this is cleanup
     }
+  }
+
+  /**
+   * Construct and verify a Stripe webhook event from the raw body and signature.
+   */
+  constructWebhookEvent(
+    rawBody: Buffer,
+    signature: string,
+    webhookSecret: string
+  ): Stripe.Event {
+    return stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
   }
 }
 

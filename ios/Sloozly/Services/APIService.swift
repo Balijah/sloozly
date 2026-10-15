@@ -228,15 +228,16 @@ extension APIService {
         return response.linkToken
     }
     
-    func exchangeBankToken(publicToken: String, accountId: String) async throws -> BankAccountInfo {
+    func exchangeBankToken(publicToken: String, accountId: String, mandateAccepted: Bool = true) async throws -> BankAccountInfo {
         struct ExchangeRequest: Codable {
             let publicToken: String
             let accountId: String
+            let mandateAccepted: Bool
         }
         return try await request(
             endpoint: "bank/exchange-token",
             method: .post,
-            body: ExchangeRequest(publicToken: publicToken, accountId: accountId)
+            body: ExchangeRequest(publicToken: publicToken, accountId: accountId, mandateAccepted: mandateAccepted)
         )
     }
     
@@ -273,11 +274,11 @@ extension APIService {
     
     // MARK: - Penalties
     
-    func triggerPenalty(alarmId: String, snoozeNumber: Int) async throws -> TriggerPenaltyResponse {
+    func triggerPenalty(alarmId: String, occurrenceId: String, snoozeNumber: Int) async throws -> TriggerPenaltyResponse {
         try await request(
             endpoint: "penalties/trigger",
             method: .post,
-            body: TriggerPenaltyRequest(alarmId: alarmId, snoozeNumber: snoozeNumber)
+            body: TriggerPenaltyRequest(alarmId: alarmId, occurrenceId: occurrenceId, snoozeNumber: snoozeNumber)
         )
     }
     

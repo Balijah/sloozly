@@ -4,9 +4,6 @@ import { prisma } from '../config/database.js';
 import { UnauthorizedError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
-// ===========================================
-// Extend Express Request Type
-// ===========================================
 declare global {
   namespace Express {
     interface Request {
@@ -19,12 +16,9 @@ declare global {
   }
 }
 
-// ===========================================
-// Firebase Auth Middleware
-// ===========================================
 export const authenticate = async (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
@@ -35,32 +29,32 @@ export const authenticate = async (
     }
 
     const token = authHeader.split('Bearer ')[1];
-    
+
     if (!token) {
       throw new UnauthorizedError('No token provided');
     }
 
-    // Verify Firebase token
     const decodedToken = await firebaseAuth.verifyIdToken(token);
-    
-    // Get or create user in database
+
     let user = await prisma.user.findUnique({
       where: { firebaseUid: decodedToken.uid },
     });
 
     if (!user) {
-      // Auto-create user on first authenticated request
       user = await prisma.user.create({
         data: {
           firebaseUid: decodedToken.uid,
-          email: decodedToken.email || '',
-          displayName: decodedToken.name || null,
+          email: decodedToken.email ?? '',
+          displayName: (decodedToken['name'] as string | undefined) ?? null,
         },
       });
       logger.info(`New user created: ${user.id}`);
     }
 
-    // Attach user to request
+    if (user.deletedAt) {
+      throw new UnauthorizedError('Account has been deleted');
+    }
+
     req.user = {
       id: user.id,
       firebaseUid: user.firebaseUid,
@@ -78,30 +72,28 @@ export const authenticate = async (
   }
 };
 
-// ===========================================
-// Optional Auth (for public + authenticated routes)
-// ===========================================
 export const optionalAuth = async (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): Promise<void> => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
-    return next();
+    next();
+    return;
   }
 
   try {
     const token = authHeader.split('Bearer ')[1];
-    
+
     if (token) {
       const decodedToken = await firebaseAuth.verifyIdToken(token);
       const user = await prisma.user.findUnique({
         where: { firebaseUid: decodedToken.uid },
       });
 
-      if (user) {
+      if (user && !user.deletedAt) {
         req.user = {
           id: user.id,
           firebaseUid: user.firebaseUid,

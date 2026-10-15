@@ -1,7 +1,3 @@
-// ===========================================
-// Custom Error Classes
-// ===========================================
-
 export class AppError extends Error {
   public readonly statusCode: number;
   public readonly isOperational: boolean;
@@ -10,7 +6,6 @@ export class AppError extends Error {
     super(message);
     this.statusCode = statusCode;
     this.isOperational = isOperational;
-
     Error.captureStackTrace(this, this.constructor);
   }
 }
@@ -55,11 +50,11 @@ export class ValidationError extends AppError {
 }
 
 export class PaymentError extends AppError {
-  public readonly paymentErrorCode?: string;
+  public readonly paymentErrorCode: string | null;
 
   constructor(message: string = 'Payment processing failed', paymentErrorCode?: string) {
     super(message, 402);
-    this.paymentErrorCode = paymentErrorCode;
+    this.paymentErrorCode = paymentErrorCode ?? null;
   }
 }
 

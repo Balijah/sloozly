@@ -1,17 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { PenaltyStatus } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { firebaseAuth } from '../config/firebase.js';
+import { stripeService } from '../services/stripe.service.js';
 import { BadRequestError, NotFoundError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
-// ===========================================
-// Validation Schemas
-// ===========================================
-
 const registerSchema = z.object({
   firebaseToken: z.string(),
-  timezone: z.string().optional().default('America/New_York'),
+  timezone: z.string().optional(),
 });
 
 const updateMeSchema = z.object({
@@ -19,13 +17,8 @@ const updateMeSchema = z.object({
   timezone: z.string().optional(),
 });
 
-// ===========================================
-// Controllers
-// ===========================================
-
 /**
  * POST /api/auth/register
- * Create user in database after Firebase signup
  */
 export const register = async (
   req: Request,
@@ -35,10 +28,8 @@ export const register = async (
   try {
     const { firebaseToken, timezone } = registerSchema.parse(req.body);
 
-    // Verify Firebase token
     const decodedToken = await firebaseAuth.verifyIdToken(firebaseToken);
 
-    // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: { firebaseUid: decodedToken.uid },
     });
@@ -47,17 +38,15 @@ export const register = async (
       throw new BadRequestError('User already registered');
     }
 
-    // Create user
     const user = await prisma.user.create({
       data: {
         firebaseUid: decodedToken.uid,
-        email: decodedToken.email || '',
-        displayName: decodedToken.name || null,
-        timezone,
+        email: decodedToken.email ?? '',
+        displayName: decodedToken['name'] as string | undefined ?? null,
+        timezone: timezone ?? 'America/New_York',
       },
     });
 
-    // Log audit
     await prisma.auditLog.create({
       data: {
         userId: user.id,
@@ -85,7 +74,6 @@ export const register = async (
 
 /**
  * GET /api/auth/me
- * Get current user profile
  */
 export const getMe = async (
   req: Request,
@@ -142,7 +130,6 @@ export const getMe = async (
 
 /**
  * PUT /api/auth/me
- * Update current user profile
  */
 export const updateMe = async (
   req: Request,
@@ -151,7 +138,12 @@ export const updateMe = async (
 ): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const data = updateMeSchema.parse(req.body);
+    const updates = updateMeSchema.parse(req.body);
+
+    // Build only the fields that were actually provided
+    const data: Record<string, unknown> = {};
+    if (updates.displayName !== undefined) data['displayName'] = updates.displayName;
+    if (updates.timezone !== undefined) data['timezone'] = updates.timezone;
 
     const user = await prisma.user.update({
       where: { id: userId },
@@ -175,7 +167,10 @@ export const updateMe = async (
 
 /**
  * DELETE /api/auth/me
- * Delete user account
+ *
+ * Soft-delete: marks deletedAt, then does external cleanup.
+ * Refuses if there are pending/processing payments — those must settle first.
+ * Local records (penalties, audit logs) are preserved for compliance.
  */
 export const deleteMe = async (
   req: Request,
@@ -186,15 +181,56 @@ export const deleteMe = async (
     const userId = req.user!.id;
     const firebaseUid = req.user!.firebaseUid;
 
-    // Delete from database (cascade will handle related records)
-    await prisma.user.delete({
-      where: { id: userId },
+    const pendingPayments = await prisma.penalty.count({
+      where: {
+        userId,
+        status: { in: [PenaltyStatus.PENDING, PenaltyStatus.PROCESSING, PenaltyStatus.REQUIRES_ACTION] },
+      },
     });
 
-    // Delete from Firebase
-    await firebaseAuth.deleteUser(firebaseUid);
+    if (pendingPayments > 0) {
+      throw new BadRequestError(
+        `Cannot delete account while ${pendingPayments} payment(s) are still processing. ` +
+        'Please wait for all payments to settle.'
+      );
+    }
 
-    logger.info(`User deleted: ${userId}`);
+    // Clean up external services first, before modifying local data
+    const bankAccount = await prisma.bankAccount.findUnique({
+      where: { userId },
+    });
+
+    if (bankAccount?.stripeCustomerId) {
+      await stripeService.deleteCustomer(bankAccount.stripeCustomerId);
+    }
+
+    // Soft-delete: set deletedAt, remove bank account link
+    await prisma.$transaction([
+      prisma.bankAccount.deleteMany({ where: { userId } }),
+      prisma.alarm.deleteMany({ where: { userId } }),
+      prisma.user.update({
+        where: { id: userId },
+        data: { deletedAt: new Date() },
+      }),
+    ]);
+
+    // Delete from Firebase last — if this fails, the user can still log in
+    // and we can retry, but their data is already cleaned up.
+    try {
+      await firebaseAuth.deleteUser(firebaseUid);
+    } catch (error) {
+      logger.error(`Failed to delete Firebase user ${firebaseUid}:`, error);
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        userId,
+        action: 'USER_DELETED',
+        details: { soft: true },
+      },
+    });
+
+    logger.info(`User soft-deleted: ${userId}`);
 
     res.json({
       status: 'success',

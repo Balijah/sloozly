@@ -135,6 +135,7 @@ struct PenaltyStats: Codable {
 
 struct TriggerPenaltyRequest: Codable {
     let alarmId: String
+    let occurrenceId: String
     let snoozeNumber: Int
 }
 

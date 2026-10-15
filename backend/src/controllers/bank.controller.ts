@@ -6,22 +6,14 @@ import { stripeService } from '../services/stripe.service.js';
 import { NotFoundError, BadRequestError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
-// ===========================================
-// Validation Schemas
-// ===========================================
-
 const exchangeTokenSchema = z.object({
   publicToken: z.string(),
   accountId: z.string(),
+  mandateAccepted: z.boolean(),
 });
-
-// ===========================================
-// Controllers
-// ===========================================
 
 /**
  * POST /api/bank/link-token
- * Generate a Plaid Link token for the client
  */
 export const createLinkToken = async (
   req: Request,
@@ -35,9 +27,7 @@ export const createLinkToken = async (
 
     res.json({
       status: 'success',
-      data: {
-        linkToken,
-      },
+      data: { linkToken },
     });
   } catch (error) {
     next(error);
@@ -46,7 +36,9 @@ export const createLinkToken = async (
 
 /**
  * POST /api/bank/exchange-token
- * Exchange public token for access token and store bank account
+ *
+ * Requires mandateAccepted=true to record that the user
+ * has consented to ACH debits under the snooze rules.
  */
 export const exchangeToken = async (
   req: Request,
@@ -55,9 +47,14 @@ export const exchangeToken = async (
 ): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const { publicToken, accountId } = exchangeTokenSchema.parse(req.body);
+    const { publicToken, accountId, mandateAccepted } = exchangeTokenSchema.parse(req.body);
 
-    // Check if user already has a linked bank account
+    if (!mandateAccepted) {
+      throw new BadRequestError(
+        'You must accept the payment authorization to link a bank account.'
+      );
+    }
+
     const existingAccount = await prisma.bankAccount.findUnique({
       where: { userId },
     });
@@ -66,17 +63,17 @@ export const exchangeToken = async (
       throw new BadRequestError('Bank account already linked. Unlink first to connect a new one.');
     }
 
-    // Exchange token via Plaid
     const plaidData = await plaidService.exchangePublicToken(publicToken, accountId);
 
-    // Create Stripe customer and bank account for ACH transfers
     const stripeData = await stripeService.createCustomerWithBankAccount(
       req.user!.email,
       plaidData.accessToken,
       accountId
     );
 
-    // Store bank account in database
+    const ipAddress = req.ip ?? req.socket.remoteAddress ?? null;
+    const userAgent = req.headers['user-agent'] ?? null;
+
     const bankAccount = await prisma.bankAccount.create({
       data: {
         userId,
@@ -88,11 +85,13 @@ export const exchangeToken = async (
         accountMask: plaidData.accountMask,
         stripeCustomerId: stripeData.customerId,
         stripeBankAccountId: stripeData.bankAccountId,
+        mandateAcceptedAt: new Date(),
+        mandateIpAddress: ipAddress,
+        mandateUserAgent: userAgent,
         status: 'ACTIVE',
       },
     });
 
-    // Audit log
     await prisma.auditLog.create({
       data: {
         userId,
@@ -100,6 +99,7 @@ export const exchangeToken = async (
         details: {
           institutionName: plaidData.institutionName,
           accountMask: plaidData.accountMask,
+          mandateAccepted: true,
         },
       },
     });
@@ -124,7 +124,6 @@ export const exchangeToken = async (
 
 /**
  * GET /api/bank/status
- * Get linked bank account status
  */
 export const getStatus = async (
   req: Request,
@@ -151,20 +150,14 @@ export const getStatus = async (
     if (!bankAccount) {
       res.json({
         status: 'success',
-        data: {
-          linked: false,
-          account: null,
-        },
+        data: { linked: false, account: null },
       });
       return;
     }
 
     res.json({
       status: 'success',
-      data: {
-        linked: true,
-        account: bankAccount,
-      },
+      data: { linked: true, account: bankAccount },
     });
   } catch (error) {
     next(error);
@@ -173,7 +166,8 @@ export const getStatus = async (
 
 /**
  * DELETE /api/bank/unlink
- * Remove linked bank account
+ *
+ * Removes the bank account from Plaid, Stripe, and the local DB.
  */
 export const unlinkAccount = async (
   req: Request,
@@ -191,20 +185,25 @@ export const unlinkAccount = async (
       throw new NotFoundError('No bank account linked');
     }
 
-    // Remove Plaid item (optional but recommended)
+    // Remove from Stripe first (best-effort)
+    if (bankAccount.stripeCustomerId && bankAccount.stripeBankAccountId) {
+      await stripeService.removeBankAccount(
+        bankAccount.stripeCustomerId,
+        bankAccount.stripeBankAccountId
+      );
+    }
+
+    // Remove Plaid item (best-effort)
     try {
       await plaidService.removeItem(bankAccount.plaidAccessToken);
     } catch (error) {
-      // Log but don't fail if Plaid removal fails
       logger.warn(`Failed to remove Plaid item for user ${userId}:`, error);
     }
 
-    // Delete from database
     await prisma.bankAccount.delete({
       where: { userId },
     });
 
-    // Audit log
     await prisma.auditLog.create({
       data: {
         userId,

@@ -5,53 +5,44 @@ import morgan from 'morgan';
 import { errorHandler } from './middleware/error.middleware.js';
 import { notFoundHandler } from './middleware/notFound.middleware.js';
 import routes from './routes/index.js';
+import webhookRoutes from './routes/webhook.routes.js';
 import { config } from './config/index.js';
 
 const app = express();
 
-// ===========================================
-// Security Middleware
-// ===========================================
 app.use(helmet());
 app.use(cors({
-  origin: config.nodeEnv === 'production' 
-    ? ['https://sloozly.com'] // Update with your domain
+  origin: config.nodeEnv === 'production'
+    ? ['https://sloozly.com']
     : '*',
   credentials: true,
 }));
 
-// ===========================================
-// Request Parsing
-// ===========================================
+// Stripe webhooks need the raw body for signature verification.
+// Mount this BEFORE express.json().
+app.use(
+  '/api/webhooks/stripe',
+  express.raw({ type: 'application/json' }),
+  webhookRoutes
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ===========================================
-// Logging
-// ===========================================
 if (config.nodeEnv !== 'test') {
   app.use(morgan('combined'));
 }
 
-// ===========================================
-// Health Check
-// ===========================================
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '0.1.0'
+    version: '0.2.0',
   });
 });
 
-// ===========================================
-// API Routes
-// ===========================================
 app.use('/api', routes);
 
-// ===========================================
-// Error Handling
-// ===========================================
 app.use(notFoundHandler);
 app.use(errorHandler);
 
