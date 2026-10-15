@@ -65,7 +65,8 @@ final class APIService {
         endpoint: String,
         method: HTTPMethod = .get,
         body: Encodable? = nil,
-        queryItems: [URLQueryItem]? = nil
+        queryItems: [URLQueryItem]? = nil,
+        retryOnAuthFailure: Bool = true
     ) async throws -> T {
         let request = try buildRequest(
             endpoint: endpoint,
@@ -74,7 +75,12 @@ final class APIService {
             queryItems: queryItems
         )
         
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.networkError(error)
+        }
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
@@ -85,11 +91,22 @@ final class APIService {
         case 200...299:
             break
         case 401:
+            if retryOnAuthFailure {
+                return try await retryWithFreshToken(
+                    endpoint: endpoint,
+                    method: method,
+                    body: body,
+                    queryItems: queryItems
+                )
+            }
             throw APIError.unauthorized
         case 403:
             throw APIError.forbidden
         case 404:
             throw APIError.notFound
+        case 409:
+            let errorResponse = try? decoder.decode(ErrorResponse.self, from: data)
+            throw APIError.conflict(errorResponse?.message ?? "Conflict")
         case 422:
             let errorResponse = try? decoder.decode(ValidationErrorResponse.self, from: data)
             throw APIError.validation(errorResponse?.errors ?? [:])
@@ -105,17 +122,59 @@ final class APIService {
         return apiResponse.data
     }
     
+    /// Refresh the Firebase auth token and retry the request once.
+    private func retryWithFreshToken<T: Decodable>(
+        endpoint: String,
+        method: HTTPMethod,
+        body: Encodable?,
+        queryItems: [URLQueryItem]?
+    ) async throws -> T {
+        do {
+            _ = try await AuthService.shared.refreshToken()
+        } catch {
+            throw APIError.tokenRefreshFailed(error)
+        }
+        return try await request(
+            endpoint: endpoint,
+            method: method,
+            body: body,
+            queryItems: queryItems,
+            retryOnAuthFailure: false
+        )
+    }
+    
     func requestVoid(
         endpoint: String,
         method: HTTPMethod = .get,
-        body: Encodable? = nil
+        body: Encodable? = nil,
+        retryOnAuthFailure: Bool = true
     ) async throws {
         let request = try buildRequest(endpoint: endpoint, method: method, body: body)
         
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.networkError(error)
+        }
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 401 && retryOnAuthFailure {
+            do {
+                _ = try await AuthService.shared.refreshToken()
+            } catch {
+                throw APIError.tokenRefreshFailed(error)
+            }
+            try await requestVoid(
+                endpoint: endpoint,
+                method: method,
+                body: body,
+                retryOnAuthFailure: false
+            )
+            return
         }
         
         guard (200...299).contains(httpResponse.statusCode) else {
@@ -161,10 +220,12 @@ enum APIError: LocalizedError {
     case unauthorized
     case forbidden
     case notFound
+    case conflict(String)
     case validation([String: [String]])
     case serverError(Int)
     case unknown(String)
     case networkError(Error)
+    case tokenRefreshFailed(Error)
     
     var errorDescription: String? {
         switch self {
@@ -178,6 +239,8 @@ enum APIError: LocalizedError {
             return "Access denied"
         case .notFound:
             return "Resource not found"
+        case .conflict(let message):
+            return message
         case .validation(let errors):
             let messages = errors.values.flatMap { $0 }
             return messages.joined(separator: "\n")
@@ -187,6 +250,18 @@ enum APIError: LocalizedError {
             return message
         case .networkError(let error):
             return error.localizedDescription
+        case .tokenRefreshFailed(let error):
+            return "Authentication refresh failed: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Whether this error is transient and the request should be retried.
+    var isRetryable: Bool {
+        switch self {
+        case .networkError, .serverError:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -216,6 +291,17 @@ extension APIService {
     
     func deleteAccount() async throws {
         try await requestVoid(endpoint: "auth/me", method: .delete)
+    }
+    
+    func updateFCMToken(_ token: String) async throws {
+        struct FCMTokenRequest: Codable {
+            let fcmToken: String
+        }
+        try await requestVoid(
+            endpoint: "auth/fcm-token",
+            method: .put,
+            body: FCMTokenRequest(fcmToken: token)
+        )
     }
     
     // MARK: - Bank
@@ -251,20 +337,20 @@ extension APIService {
     
     // MARK: - Alarms
     
-    func listAlarms() async throws -> [Alarm] {
+    func listAlarms() async throws -> [AlarmModel] {
         struct AlarmsResponse: Decodable {
-            let alarms: [Alarm]
+            let alarms: [AlarmModel]
             let count: Int
         }
         let response: AlarmsResponse = try await request(endpoint: "alarms")
         return response.alarms
     }
     
-    func createAlarm(_ request: CreateAlarmRequest) async throws -> Alarm {
+    func createAlarm(_ request: CreateAlarmRequest) async throws -> AlarmModel {
         try await self.request(endpoint: "alarms", method: .post, body: request)
     }
     
-    func updateAlarm(id: String, _ request: UpdateAlarmRequest) async throws -> Alarm {
+    func updateAlarm(id: String, _ request: UpdateAlarmRequest) async throws -> AlarmModel {
         try await self.request(endpoint: "alarms/\(id)", method: .put, body: request)
     }
     

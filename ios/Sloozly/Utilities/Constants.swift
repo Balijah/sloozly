@@ -47,7 +47,7 @@ enum Constants {
     
     // Alarm
     static let defaultPenaltyAmountCents = 500 // $5.00
-    static let maxPenaltyAmountCents = 5000 // $50.00
+    static let maxPenaltyAmountCents = 2500 // $25.00 daily cap
     static let maxSnoozeCount = 20
     static let defaultSnoozeDurationMinutes = 9
     

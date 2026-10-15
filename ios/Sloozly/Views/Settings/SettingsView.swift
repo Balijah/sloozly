@@ -1,8 +1,10 @@
 import SwiftUI
+import AlarmKit
 
 struct SettingsView: View {
     @EnvironmentObject var authViewModel: AuthViewModel
     @StateObject private var bankViewModel = BankViewModel()
+    @StateObject private var alarmKitManager = AlarmKitManager.shared
     
     @State private var showDeleteConfirmation = false
     @State private var showUnlinkConfirmation = false
@@ -30,6 +32,51 @@ struct SettingsView: View {
                     }
                 }
                 
+                // AlarmKit Section
+                Section("Alarm System") {
+                    HStack {
+                        Image(systemName: "alarm.waves.left.and.right")
+                            .foregroundColor(authorizationColor)
+                        Text("AlarmKit")
+                        Spacer()
+                        Text(authorizationText)
+                            .font(.caption)
+                            .foregroundColor(authorizationColor)
+                    }
+                    
+                    if alarmKitManager.authorizationState == .notDetermined {
+                        Button {
+                            Task {
+                                await alarmKitManager.requestAuthorization()
+                            }
+                        } label: {
+                            Label("Enable Alarm Alerts", systemImage: "bell.badge")
+                        }
+                    }
+                    
+                    if alarmKitManager.authorizationState == .denied {
+                        Button {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Label("Open Settings to Enable", systemImage: "gear")
+                        }
+                    }
+                    
+                    HStack {
+                        Image(systemName: "moon.zzz.fill")
+                            .foregroundColor(.purple)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Breaks through Silent Mode & Focus")
+                                .font(.caption)
+                            Text("AlarmKit alarms ring even when your phone is silenced.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
                 // Bank Account Section
                 Section("Payment") {
                     if bankViewModel.isLoading {
@@ -39,7 +86,6 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     } else if bankViewModel.isLinked, let account = bankViewModel.bankAccount {
-                        // Linked bank account
                         HStack {
                             Image(systemName: "building.columns.fill")
                                 .foregroundColor(.green)
@@ -47,7 +93,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading) {
                                 Text(account.institutionName)
                                     .font(.headline)
-                                Text("\(account.accountName) ••••\(account.accountMask)")
+                                Text("\(account.accountName) ····\(account.accountMask)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -65,7 +111,6 @@ struct SettingsView: View {
                             Label("Unlink Bank Account", systemImage: "xmark.circle")
                         }
                     } else {
-                        // No bank linked
                         VStack(alignment: .leading, spacing: 8) {
                             Text("No bank account linked")
                                 .font(.headline)
@@ -82,12 +127,43 @@ struct SettingsView: View {
                     }
                 }
                 
+                // Penalty Info Section
+                Section("Penalty Info") {
+                    HStack {
+                        Text("Snooze penalty")
+                        Spacer()
+                        Text(Constants.defaultPenaltyAmountCents.centsToUSD)
+                            .foregroundColor(.orange)
+                    }
+                    
+                    HStack {
+                        Text("Daily cap")
+                        Spacer()
+                        Text(Constants.maxPenaltyAmountCents.centsToUSD)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    HStack {
+                        Text("Snooze duration")
+                        Spacer()
+                        Text("\(Constants.defaultSnoozeDurationMinutes) minutes")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
                 // App Info Section
                 Section("About") {
                     HStack {
                         Text("Version")
                         Spacer()
-                        Text("0.1.0 (MVP)")
+                        Text("1.0.0 (AlarmKit)")
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    HStack {
+                        Text("Minimum iOS")
+                        Spacer()
+                        Text("iOS 26")
                             .foregroundColor(.secondary)
                     }
                     
@@ -149,14 +225,30 @@ struct SettingsView: View {
         }
     }
     
+    private var authorizationText: String {
+        switch alarmKitManager.authorizationState {
+        case .authorized: return "Enabled"
+        case .denied: return "Disabled"
+        case .notDetermined: return "Not Set Up"
+        @unknown default: return "Unknown"
+        }
+    }
+    
+    private var authorizationColor: Color {
+        switch alarmKitManager.authorizationState {
+        case .authorized: return .green
+        case .denied: return .red
+        case .notDetermined: return .orange
+        @unknown default: return .gray
+        }
+    }
+    
     private func linkBankAccount() {
-        // Get the root view controller to present Plaid Link
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let rootVC = windowScene.windows.first?.rootViewController else {
             return
         }
         
-        // Find the topmost presented controller
         var topVC = rootVC
         while let presented = topVC.presentedViewController {
             topVC = presented
