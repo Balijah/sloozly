@@ -71,9 +71,7 @@ export const exchangeToken = async (
       accountId
     );
 
-    const ipAddress = req.headers['x-forwarded-for'] as string | undefined
-      ?? req.socket.remoteAddress
-      ?? null;
+    const ipAddress = req.ip ?? req.socket.remoteAddress ?? null;
     const userAgent = req.headers['user-agent'] ?? null;
 
     const bankAccount = await prisma.bankAccount.create({

@@ -1,8 +1,8 @@
-import { BankAccount, Penalty, PenaltyStatus, Prisma } from '@prisma/client';
+import { BankAccount, Penalty, PenaltyStatus } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { config } from '../config/index.js';
 import { stripeService } from './stripe.service.js';
-import { ConflictError } from '../utils/errors.js';
+import { ConflictError, PaymentError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
 interface TriggerPenaltyParams {
@@ -22,190 +22,97 @@ class PenaltyService {
     return config.penalty.amountCents;
   }
 
-  /**
-   * Sum the amounts already charged (PENDING/PROCESSING/COMPLETED)
-   * for the given user on a calendar day in the user's local timezone.
-   */
-  async getDayTotal(userId: string, date: Date): Promise<number> {
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(23, 59, 59, 999);
+  async triggerPenalty(params: TriggerPenaltyParams): Promise<Penalty> {
+    const { userId, alarmId, occurrenceId, snoozeNumber, bankAccount } = params;
+    const key = { userId, occurrenceId, snoozeNumber };
 
-    const result = await prisma.penalty.aggregate({
-      where: {
-        userId,
-        triggeredAt: { gte: dayStart, lte: dayEnd },
-        status: { in: [PenaltyStatus.PENDING, PenaltyStatus.PROCESSING, PenaltyStatus.COMPLETED] },
-      },
-      _sum: { amount: true },
+    const penalty = await prisma.$transaction(async tx => {
+      // Serialize reservations for this user across all server processes.
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+      const existing = await tx.penalty.findUnique({
+        where: { unique_snooze_per_occurrence: key },
+      });
+      if (existing) {
+        if (existing.alarmId !== alarmId) throw new ConflictError('Occurrence belongs to another alarm');
+        return existing;
+      }
+
+      const [day] = await tx.$queryRaw<{ total: number }[]>`
+        SELECT COALESCE(SUM(p.amount), 0)::int AS total
+        FROM penalties p JOIN users u ON u.id = p.user_id
+        WHERE p.user_id = ${userId}
+          AND p.status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'REQUIRES_ACTION')
+          AND (p.triggered_at AT TIME ZONE 'UTC' AT TIME ZONE u.timezone)::date =
+              (CURRENT_TIMESTAMP AT TIME ZONE u.timezone)::date
+      `;
+      const capped = (day?.total ?? 0) + this.getPenaltyAmount() > config.penalty.dailyCapCents;
+      return tx.penalty.create({
+        data: {
+          userId, alarmId, occurrenceId, snoozeNumber,
+          amount: capped ? 0 : this.getPenaltyAmount(),
+          status: capped ? PenaltyStatus.COMPLETED : PenaltyStatus.PENDING,
+          processedAt: capped ? new Date() : null,
+          failureReason: capped ? 'Daily cap reached' : null,
+        },
+      });
     });
 
-    return result._sum.amount ?? 0;
-  }
-
-  /**
-   * Trigger a penalty for a snooze event.
-   *
-   * Idempotency: the (occurrenceId, snoozeNumber) pair has a unique DB constraint.
-   * If a penalty already exists for this pair, we return it instead of creating a duplicate.
-   * The same occurrenceId+snoozeNumber is used as the Stripe idempotency key.
-   *
-   * Daily cap: if the user has already been charged up to the daily cap,
-   * we skip creating a new penalty.
-   */
-  async triggerPenalty(params: TriggerPenaltyParams): Promise<Penalty & { capped?: boolean }> {
-    const { userId, alarmId, occurrenceId, snoozeNumber, bankAccount } = params;
-    const amount = this.getPenaltyAmount();
-
-    const dayTotal = await this.getDayTotal(userId, new Date());
-    if (dayTotal + amount > config.penalty.dailyCapCents) {
-      logger.info(
-        `Daily cap reached for user ${userId}: ` +
-        `today=${dayTotal}c, would be ${dayTotal + amount}c, cap=${config.penalty.dailyCapCents}c`
-      );
-
-      const existing = await prisma.penalty.findUnique({
-        where: { unique_snooze_per_occurrence: { occurrenceId, snoozeNumber } },
-      });
-      if (existing) return existing;
-
-      const capped = await prisma.penalty.create({
-        data: {
-          userId,
-          alarmId,
-          occurrenceId,
-          snoozeNumber,
-          amount: 0,
-          status: PenaltyStatus.COMPLETED,
-          processedAt: new Date(),
-          failureReason: 'Daily cap reached',
-        },
-      });
-      return { ...capped, capped: true };
+    if (penalty.status === PenaltyStatus.COMPLETED || penalty.status === PenaltyStatus.FAILED) {
+      return penalty;
     }
 
-    let penalty: Penalty;
-    try {
-      penalty = await prisma.penalty.create({
-        data: {
-          userId,
-          alarmId,
-          occurrenceId,
-          snoozeNumber,
-          amount,
-          status: PenaltyStatus.PENDING,
-        },
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        const existing = await prisma.penalty.findUnique({
-          where: { unique_snooze_per_occurrence: { occurrenceId, snoozeNumber } },
-        });
-        if (existing) {
-          logger.info(`Duplicate snooze ignored: ${occurrenceId}#${snoozeNumber}`);
-          return existing;
+    if (!bankAccount.stripeCustomerId || !bankAccount.stripeBankAccountId ||
+        !bankAccount.mandateAcceptedAt || !bankAccount.mandateIpAddress || !bankAccount.mandateUserAgent) {
+      throw new ConflictError('Bank account must be relinked with payment authorization');
+    }
+
+    const idempotencyKey = `sloozly_${penalty.id}`;
+    let paymentIntentId = penalty.stripePaymentIntentId;
+    if (!paymentIntentId) {
+      let result;
+      try {
+        result = await stripeService.createACHPaymentIntent(
+          bankAccount.stripeCustomerId,
+          bankAccount.stripeBankAccountId,
+          penalty.amount,
+          `Sloozly snooze penalty – occurrence ${occurrenceId} #${snoozeNumber}`,
+          idempotencyKey,
+          { penaltyId: penalty.id, userId, alarmId, occurrenceId, snoozeNumber: snoozeNumber.toString() }
+        );
+      } catch (error) {
+        if (error instanceof PaymentError) {
+          await prisma.penalty.updateMany({
+            where: { id: penalty.id, status: PenaltyStatus.PENDING, stripePaymentIntentId: null },
+            data: { status: PenaltyStatus.FAILED, failureReason: error.message, processedAt: new Date() },
+          });
         }
-        throw new ConflictError('Duplicate penalty');
+        throw error;
       }
-      throw error;
+      paymentIntentId = result.paymentIntentId;
+      // Never confirm (move money) until the recovery ID is durable.
+      await prisma.penalty.updateMany({
+        where: { id: penalty.id, stripePaymentIntentId: null },
+        data: { stripePaymentIntentId: paymentIntentId, status: PenaltyStatus.PROCESSING },
+      });
+      const saved = await prisma.penalty.findUniqueOrThrow({ where: { id: penalty.id } });
+      paymentIntentId = saved.stripePaymentIntentId!;
     }
 
-    logger.info(`Penalty created: ${penalty.id} for $${(amount / 100).toFixed(2)}`);
-
-    try {
-      await prisma.penalty.update({
-        where: { id: penalty.id },
-        data: { status: PenaltyStatus.PROCESSING },
+    // Unknown/network failures stay reserved and are retried with the same intent.
+    const result = await stripeService.confirmACHPaymentIntent(paymentIntentId, idempotencyKey, {
+      acceptedAt: bankAccount.mandateAcceptedAt,
+      ipAddress: bankAccount.mandateIpAddress,
+      userAgent: bankAccount.mandateUserAgent,
+    });
+    if (result.status === 'succeeded' || result.status === 'canceled') {
+      await this.resolvePayment(paymentIntentId, result.status === 'succeeded');
+    } else {
+      await prisma.penalty.updateMany({
+        where: { id: penalty.id, status: { in: [PenaltyStatus.PENDING, PenaltyStatus.PROCESSING, PenaltyStatus.REQUIRES_ACTION] } },
+        data: { status: result.status === 'requires_action' ? PenaltyStatus.REQUIRES_ACTION : PenaltyStatus.PROCESSING },
       });
-
-      const idempotencyKey = `sloozly_${occurrenceId}_${snoozeNumber}`;
-
-      const result = await stripeService.createACHPaymentIntent(
-        bankAccount.stripeCustomerId!,
-        bankAccount.stripeBankAccountId!,
-        amount,
-        `Sloozly snooze penalty – occurrence ${occurrenceId} #${snoozeNumber}`,
-        idempotencyKey,
-        {
-          penaltyId: penalty.id,
-          alarmId,
-          occurrenceId,
-          snoozeNumber: snoozeNumber.toString(),
-        }
-      );
-
-      // ACH stays in 'processing' — do NOT mark COMPLETED here.
-      // The webhook will resolve the final status.
-      const updatedPenalty = await prisma.penalty.update({
-        where: { id: penalty.id },
-        data: {
-          status: PenaltyStatus.PROCESSING,
-          stripePaymentIntentId: result.paymentIntentId,
-        },
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          userId,
-          action: 'PENALTY_PROCESSING',
-          details: {
-            penaltyId: penalty.id,
-            amount,
-            snoozeNumber,
-            paymentIntentId: result.paymentIntentId,
-            occurrenceId,
-          },
-        },
-      });
-
-      logger.info(`Penalty submitted for processing: ${penalty.id}`);
-
-      return updatedPenalty;
-    } catch (error: unknown) {
-      const failureReason = error instanceof Error
-        ? error.message
-        : 'Payment processing failed';
-
-      const failedPenalty = await prisma.penalty.update({
-        where: { id: penalty.id },
-        data: {
-          status: PenaltyStatus.FAILED,
-          failureReason,
-          processedAt: new Date(),
-        },
-      });
-
-      await prisma.bankAccount.update({
-        where: { id: bankAccount.id },
-        data: {
-          failureCount: { increment: 1 },
-          lastFailureReason: failureReason,
-          status: bankAccount.failureCount >= 2 ? 'NEEDS_RELINK' : 'ACTIVE',
-        },
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          userId,
-          action: 'PENALTY_FAILED',
-          details: {
-            penaltyId: penalty.id,
-            amount,
-            snoozeNumber,
-            failureReason,
-            occurrenceId,
-          },
-        },
-      });
-
-      logger.warn(`Penalty processing failed: ${penalty.id} – ${failureReason}`);
-
-      return failedPenalty;
     }
+    return prisma.penalty.findUniqueOrThrow({ where: { id: penalty.id } });
   }
 
   /**
