@@ -121,7 +121,7 @@ model Penalty {
   user  User   @relation(fields: [userId], references: [id], onDelete: Restrict)
   alarm Alarm? @relation(fields: [alarmId], references: [id], onDelete: SetNull)
 
-  @@unique([occurrenceId, snoozeNumber], name: "unique_snooze_per_occurrence")
+  @@unique([userId, occurrenceId, snoozeNumber], name: "unique_snooze_per_occurrence")
   @@index([userId, triggeredAt])
   @@index([status])
   @@map("penalties")

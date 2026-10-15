@@ -184,7 +184,7 @@ export const deleteMe = async (
     const pendingPayments = await prisma.penalty.count({
       where: {
         userId,
-        status: { in: [PenaltyStatus.PENDING, PenaltyStatus.PROCESSING] },
+        status: { in: [PenaltyStatus.PENDING, PenaltyStatus.PROCESSING, PenaltyStatus.REQUIRES_ACTION] },
       },
     });
 

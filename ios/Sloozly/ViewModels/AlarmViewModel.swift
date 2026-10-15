@@ -41,8 +41,7 @@ final class AlarmViewModel: ObservableObject {
             minute: minute,
             label: label,
             isEnabled: true,
-            repeatDays: repeatDays,
-            basePenaltyAmount: Constants.defaultPenaltyAmountCents
+            repeatDays: repeatDays
         )
         
         do {

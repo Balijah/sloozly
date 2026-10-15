@@ -59,8 +59,7 @@ class StripeService {
    * The occurrenceId+snoozeNumber is used as the Stripe idempotency key
    * to prevent duplicate charges for the same snooze event.
    *
-   * PaymentIntents for ACH stay in 'processing' until the bank settles,
-   * so we never mark them completed until we receive a webhook.
+   * Create without confirming so the caller can persist its ID before any debit.
    */
   async createACHPaymentIntent(
     customerId: string,
@@ -76,59 +75,57 @@ class StripeService {
           amount: amountCents,
           currency: 'usd',
           customer: customerId,
-          payment_method_data: {
-            type: 'us_bank_account',
-            us_bank_account: {
-              financial_connections_account: bankAccountId,
-            },
-          },
+          payment_method: bankAccountId,
           payment_method_types: ['us_bank_account'],
           description,
           metadata: {
             ...metadata,
             app: 'sloozly',
           },
-          mandate_data: {
-            customer_acceptance: {
-              type: 'online',
-              online: {
-                ip_address: metadata['mandate_ip'] ?? 'unknown',
-                user_agent: metadata['mandate_ua'] ?? 'Sloozly iOS',
-              },
-            },
-          },
         },
         { idempotencyKey }
       );
 
-      // Confirm immediately — ACH will move to 'processing'
-      const confirmed = await stripe.paymentIntents.confirm(paymentIntent.id, undefined, {
-        idempotencyKey: `${idempotencyKey}_confirm`,
-      });
-
-      logger.info(
-        `ACH PaymentIntent created: ${confirmed.id} status=${confirmed.status} ` +
-        `for $${(amountCents / 100).toFixed(2)}`
-      );
-
-      return {
-        paymentIntentId: confirmed.id,
-        status: confirmed.status,
-      };
+      return { paymentIntentId: paymentIntent.id, status: paymentIntent.status };
     } catch (error: unknown) {
       logger.error('Stripe createACHPaymentIntent error:', error);
 
       if (error instanceof Stripe.errors.StripeError) {
         if (error.code === 'idempotency_key_in_use') {
-          throw new PaymentError('Duplicate payment request', error.code);
+          throw new ExternalServiceError('Stripe', 'Payment request in progress; retry safely');
         }
-        throw new PaymentError(
-          error.message || 'Payment failed',
-          error.code
-        );
+        if (error.type === 'StripeInvalidRequestError' || error.type === 'StripeCardError') {
+          throw new PaymentError(error.message || 'Payment failed', error.code);
+        }
       }
 
-      throw new PaymentError('Payment processing failed');
+      throw new ExternalServiceError('Stripe', 'Unable to create payment; retry safely');
+    }
+  }
+
+  async confirmACHPaymentIntent(
+    paymentIntentId: string,
+    idempotencyKey: string,
+    acceptance: { acceptedAt: Date; ipAddress: string; userAgent: string }
+  ): Promise<CreatePaymentResult> {
+    try {
+      let intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      if (intent.status === 'requires_confirmation') {
+        intent = await stripe.paymentIntents.confirm(paymentIntentId, {
+          setup_future_usage: 'off_session',
+          mandate_data: {
+            customer_acceptance: {
+              type: 'online',
+              accepted_at: Math.floor(acceptance.acceptedAt.getTime() / 1000),
+              online: { ip_address: acceptance.ipAddress, user_agent: acceptance.userAgent },
+            },
+          },
+        }, { idempotencyKey: `${idempotencyKey}_confirm` });
+      }
+      return { paymentIntentId: intent.id, status: intent.status };
+    } catch (error) {
+      // A timeout is not a decline: keep the reservation until Stripe is reconciled.
+      throw new ExternalServiceError('Stripe', 'Unable to confirm payment; retry safely');
     }
   }
 

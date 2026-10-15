@@ -34,7 +34,9 @@ struct Alarm: Codable, Identifiable {
         return "\(String(format: "%02d", hour)):\(String(format: "%02d", minute))"
     }
     
-    // Penalty amount is set server-side; display logic uses the penalty history
+    var penaltyAmountFormatted: String {
+        String(format: "$%.2f", Double(Constants.defaultPenaltyAmountCents) / 100)
+    }
     
     var repeatDaysText: String {
         if repeatDays.isEmpty {

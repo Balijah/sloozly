@@ -74,8 +74,7 @@ final class AlarmService {
         content.sound = .defaultCritical
         content.categoryIdentifier = Constants.NotificationIdentifiers.alarmCategory
         content.userInfo = [
-            "alarmId": alarm.id,
-            "basePenaltyAmount": alarm.basePenaltyAmount
+            "alarmId": alarm.id
         ]
         
         // Create trigger
@@ -164,6 +163,7 @@ final class AlarmService {
         do {
             let response = try await APIService.shared.triggerPenalty(
                 alarmId: alarmId,
+                occurrenceId: "\(alarmId)_\(Date().formatted(.iso8601.year().month().day().dateSeparator(.dash)))",
                 snoozeNumber: currentCount
             )
             

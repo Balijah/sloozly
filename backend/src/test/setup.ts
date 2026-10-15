@@ -80,7 +80,7 @@ vi.mock('stripe', () => {
     },
   };
 
-  const StripeClass = vi.fn(() => mockStripe);
+  const StripeClass = vi.fn(function () { return mockStripe; });
   (StripeClass as any).errors = mockStripe.errors;
 
   return { default: StripeClass };
@@ -88,8 +88,8 @@ vi.mock('stripe', () => {
 
 // Mock plaid
 vi.mock('plaid', () => ({
-  Configuration: vi.fn(),
-  PlaidApi: vi.fn().mockImplementation(() => ({
+  Configuration: vi.fn(function () {}),
+  PlaidApi: vi.fn().mockImplementation(function () { return ({
     linkTokenCreate: vi.fn().mockResolvedValue({
       data: { link_token: 'link-sandbox-test-token' },
     }),
@@ -122,7 +122,7 @@ vi.mock('plaid', () => ({
     processorStripeBankAccountTokenCreate: vi.fn().mockResolvedValue({
       data: { stripe_bank_account_token: 'btok_test123' },
     }),
-  })),
+  }); }),
   PlaidEnvironments: { sandbox: 'https://sandbox.plaid.com' },
   CountryCode: { Us: 'US' },
   Products: { Auth: 'auth' },
