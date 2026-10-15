@@ -4,17 +4,12 @@ import { prisma } from '../config/database.js';
 import { NotFoundError, ForbiddenError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
-// ===========================================
-// Validation Schemas
-// ===========================================
-
 const createAlarmSchema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
   label: z.string().max(100).optional(),
-  isEnabled: z.boolean().optional().default(true),
-  repeatDays: z.array(z.number().int().min(0).max(6)).optional().default([]),
-  basePenaltyAmount: z.number().int().min(100).max(10000).optional().default(500), // $1-$100, default $5
+  isEnabled: z.boolean().optional(),
+  repeatDays: z.array(z.number().int().min(0).max(6)).optional(),
 });
 
 const updateAlarmSchema = z.object({
@@ -24,16 +19,10 @@ const updateAlarmSchema = z.object({
   isEnabled: z.boolean().optional(),
   repeatDays: z.array(z.number().int().min(0).max(6)).optional(),
   skipPenalty: z.boolean().optional(),
-  basePenaltyAmount: z.number().int().min(100).max(10000).optional(),
 });
-
-// ===========================================
-// Controllers
-// ===========================================
 
 /**
  * GET /api/alarms
- * List user's alarms
  */
 export const listAlarms = async (
   req: Request,
@@ -45,10 +34,7 @@ export const listAlarms = async (
 
     const alarms = await prisma.alarm.findMany({
       where: { userId },
-      orderBy: [
-        { hour: 'asc' },
-        { minute: 'asc' },
-      ],
+      orderBy: [{ hour: 'asc' }, { minute: 'asc' }],
       select: {
         id: true,
         hour: true,
@@ -57,7 +43,6 @@ export const listAlarms = async (
         isEnabled: true,
         repeatDays: true,
         skipPenalty: true,
-        basePenaltyAmount: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -77,7 +62,6 @@ export const listAlarms = async (
 
 /**
  * POST /api/alarms
- * Create a new alarm
  */
 export const createAlarm = async (
   req: Request,
@@ -93,10 +77,9 @@ export const createAlarm = async (
         userId,
         hour: data.hour,
         minute: data.minute,
-        label: data.label,
-        isEnabled: data.isEnabled,
-        repeatDays: data.repeatDays,
-        basePenaltyAmount: data.basePenaltyAmount,
+        label: data.label ?? null,
+        isEnabled: data.isEnabled ?? true,
+        repeatDays: data.repeatDays ?? [],
       },
     });
 
@@ -112,7 +95,6 @@ export const createAlarm = async (
         isEnabled: alarm.isEnabled,
         repeatDays: alarm.repeatDays,
         skipPenalty: alarm.skipPenalty,
-        basePenaltyAmount: alarm.basePenaltyAmount,
         createdAt: alarm.createdAt,
       },
     });
@@ -123,7 +105,6 @@ export const createAlarm = async (
 
 /**
  * GET /api/alarms/:id
- * Get a single alarm
  */
 export const getAlarm = async (
   req: Request,
@@ -132,7 +113,7 @@ export const getAlarm = async (
 ): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const alarmId = req.params.id;
+    const alarmId = req.params['id']!;
 
     const alarm = await prisma.alarm.findUnique({
       where: { id: alarmId },
@@ -170,7 +151,6 @@ export const getAlarm = async (
 
 /**
  * PUT /api/alarms/:id
- * Update an alarm
  */
 export const updateAlarm = async (
   req: Request,
@@ -179,10 +159,9 @@ export const updateAlarm = async (
 ): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const alarmId = req.params.id;
-    const data = updateAlarmSchema.parse(req.body);
+    const alarmId = req.params['id']!;
+    const updates = updateAlarmSchema.parse(req.body);
 
-    // Check ownership
     const existingAlarm = await prisma.alarm.findUnique({
       where: { id: alarmId },
     });
@@ -195,7 +174,15 @@ export const updateAlarm = async (
       throw new ForbiddenError('Access denied');
     }
 
-    // Update alarm
+    // Build only provided fields to avoid exactOptionalPropertyTypes issues
+    const data: Record<string, unknown> = {};
+    if (updates.hour !== undefined) data['hour'] = updates.hour;
+    if (updates.minute !== undefined) data['minute'] = updates.minute;
+    if (updates.label !== undefined) data['label'] = updates.label;
+    if (updates.isEnabled !== undefined) data['isEnabled'] = updates.isEnabled;
+    if (updates.repeatDays !== undefined) data['repeatDays'] = updates.repeatDays;
+    if (updates.skipPenalty !== undefined) data['skipPenalty'] = updates.skipPenalty;
+
     const alarm = await prisma.alarm.update({
       where: { id: alarmId },
       data,
@@ -213,7 +200,6 @@ export const updateAlarm = async (
         isEnabled: alarm.isEnabled,
         repeatDays: alarm.repeatDays,
         skipPenalty: alarm.skipPenalty,
-        basePenaltyAmount: alarm.basePenaltyAmount,
         updatedAt: alarm.updatedAt,
       },
     });
@@ -224,7 +210,8 @@ export const updateAlarm = async (
 
 /**
  * DELETE /api/alarms/:id
- * Delete an alarm
+ *
+ * Deletes the alarm but penalties are preserved (SET NULL on alarmId).
  */
 export const deleteAlarm = async (
   req: Request,
@@ -233,9 +220,8 @@ export const deleteAlarm = async (
 ): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const alarmId = req.params.id;
+    const alarmId = req.params['id']!;
 
-    // Check ownership
     const existingAlarm = await prisma.alarm.findUnique({
       where: { id: alarmId },
     });
@@ -248,7 +234,6 @@ export const deleteAlarm = async (
       throw new ForbiddenError('Access denied');
     }
 
-    // Delete alarm (penalties will cascade)
     await prisma.alarm.delete({
       where: { id: alarmId },
     });

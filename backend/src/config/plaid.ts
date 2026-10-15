@@ -1,12 +1,13 @@
 import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid';
 import { config } from './index.js';
 
-// ===========================================
-// Plaid Client Configuration
-// ===========================================
+const basePath = PlaidEnvironments[config.plaid.env];
+if (!basePath) {
+  throw new Error(`Invalid Plaid environment: ${config.plaid.env}`);
+}
 
 const plaidConfig = new Configuration({
-  basePath: PlaidEnvironments[config.plaid.env],
+  basePath,
   baseOptions: {
     headers: {
       'PLAID-CLIENT-ID': config.plaid.clientId,

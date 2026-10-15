@@ -1,10 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { z, ZodSchema } from 'zod';
+import { ZodSchema } from 'zod';
+import { z } from 'zod';
 import { ValidationError } from '../utils/errors.js';
-
-// ===========================================
-// Request Validation Middleware Factory
-// ===========================================
 
 interface ValidationSchemas {
   body?: ZodSchema;
@@ -13,41 +10,37 @@ interface ValidationSchemas {
 }
 
 export const validate = (schemas: ValidationSchemas) => {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     try {
       const errors: Record<string, string[]> = {};
 
-      // Validate body
       if (schemas.body) {
         const result = schemas.body.safeParse(req.body);
         if (!result.success) {
-          errors.body = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
+          errors['body'] = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
         } else {
           req.body = result.data;
         }
       }
 
-      // Validate query
       if (schemas.query) {
         const result = schemas.query.safeParse(req.query);
         if (!result.success) {
-          errors.query = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
+          errors['query'] = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
         } else {
           req.query = result.data;
         }
       }
 
-      // Validate params
       if (schemas.params) {
         const result = schemas.params.safeParse(req.params);
         if (!result.success) {
-          errors.params = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
+          errors['params'] = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
         } else {
           req.params = result.data;
         }
       }
 
-      // If any validation errors, throw
       if (Object.keys(errors).length > 0) {
         throw new ValidationError('Validation failed', errors);
       }
@@ -59,13 +52,9 @@ export const validate = (schemas: ValidationSchemas) => {
   };
 };
 
-// ===========================================
-// Common Validation Schemas
-// ===========================================
-
 export const commonSchemas = {
   id: z.object({
-    id: z.string().cuid(),
+    id: z.string(),
   }),
 
   pagination: z.object({

@@ -10,7 +10,6 @@ struct Alarm: Codable, Identifiable {
     var isEnabled: Bool
     var repeatDays: [Int]
     var skipPenalty: Bool
-    var basePenaltyAmount: Int // In cents
     let createdAt: Date?
     let updatedAt: Date?
     
@@ -35,9 +34,7 @@ struct Alarm: Codable, Identifiable {
         return "\(String(format: "%02d", hour)):\(String(format: "%02d", minute))"
     }
     
-    var penaltyAmountFormatted: String {
-        return String(format: "$%.2f", Double(basePenaltyAmount) / 100.0)
-    }
+    // Penalty amount is set server-side; display logic uses the penalty history
     
     var repeatDaysText: String {
         if repeatDays.isEmpty {
@@ -122,7 +119,6 @@ struct CreateAlarmRequest: Codable {
     var label: String?
     var isEnabled: Bool = true
     var repeatDays: [Int] = []
-    var basePenaltyAmount: Int = 500 // Default $5
 }
 
 struct UpdateAlarmRequest: Codable {
@@ -132,5 +128,4 @@ struct UpdateAlarmRequest: Codable {
     var isEnabled: Bool?
     var repeatDays: [Int]?
     var skipPenalty: Bool?
-    var basePenaltyAmount: Int?
 }

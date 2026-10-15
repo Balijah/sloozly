@@ -28,4 +28,4 @@ npm-debug.log*
 coverage/
 
 # Prisma
-prisma/migrations/**/migration_lock.toml
+# migration_lock.toml should be committed (Prisma requires it)

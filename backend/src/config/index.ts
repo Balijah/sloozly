@@ -1,42 +1,33 @@
 import { z } from 'zod';
 
-// ===========================================
-// Environment Variable Schema
-// ===========================================
 const envSchema = z.object({
-  // Server
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform(Number).default('3000'),
 
-  // Database
-  DATABASE_URL: z.string().url(),
+  DATABASE_URL: z.string(),
 
-  // Firebase
-  FIREBASE_PROJECT_ID: z.string(),
-  FIREBASE_PRIVATE_KEY: z.string(),
-  FIREBASE_CLIENT_EMAIL: z.string().email(),
+  FIREBASE_PROJECT_ID: z.string().default('test-project'),
+  FIREBASE_PRIVATE_KEY: z.string().default('fake-key'),
+  FIREBASE_CLIENT_EMAIL: z.string().default('test@test.iam.gserviceaccount.com'),
 
-  // Plaid
-  PLAID_CLIENT_ID: z.string(),
-  PLAID_SECRET: z.string(),
+  PLAID_CLIENT_ID: z.string().default('test'),
+  PLAID_SECRET: z.string().default('test'),
   PLAID_ENV: z.enum(['sandbox', 'development', 'production']).default('sandbox'),
 
-  // Stripe
-  STRIPE_SECRET_KEY: z.string(),
+  STRIPE_SECRET_KEY: z.string().default('sk_test_fake'),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
 
-  // Logging
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']).default('info'),
+
+  PENALTY_AMOUNT_CENTS: z.string().transform(Number).default('500'),
+  PENALTY_DAILY_CAP_CENTS: z.string().transform(Number).default('2500'),
 });
 
-// ===========================================
-// Parse and Validate Environment
-// ===========================================
 const parseEnv = () => {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
-    console.error('❌ Invalid environment variables:');
+    console.error('Invalid environment variables:');
     console.error(result.error.format());
     process.exit(1);
   }
@@ -46,12 +37,10 @@ const parseEnv = () => {
 
 const env = parseEnv();
 
-// ===========================================
-// Exported Configuration Object
-// ===========================================
 export const config = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
+  isTest: env.NODE_ENV === 'test',
 
   database: {
     url: env.DATABASE_URL,
@@ -76,6 +65,11 @@ export const config = {
 
   logging: {
     level: env.LOG_LEVEL,
+  },
+
+  penalty: {
+    amountCents: env.PENALTY_AMOUNT_CENTS,
+    dailyCapCents: env.PENALTY_DAILY_CAP_CENTS,
   },
 } as const;
 
