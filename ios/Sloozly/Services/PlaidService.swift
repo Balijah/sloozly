@@ -3,6 +3,7 @@ import LinkKit
 
 // MARK: - Plaid Service
 
+@MainActor
 final class PlaidService {
     static let shared = PlaidService()
     
@@ -15,7 +16,7 @@ final class PlaidService {
     func startLinkFlow(
         from presentingViewController: UIViewController,
         onSuccess: @escaping (String, String) -> Void, // publicToken, accountId
-        onExit: @escaping (LinkKit.LinkError?) -> Void
+        onExit: @escaping (LinkKit.ExitError?) -> Void
     ) {
         Task {
             do {
@@ -42,7 +43,7 @@ final class PlaidService {
         linkToken: String,
         from presentingViewController: UIViewController,
         onSuccess: @escaping (String, String) -> Void,
-        onExit: @escaping (LinkKit.LinkError?) -> Void
+        onExit: @escaping (LinkKit.ExitError?) -> Void
     ) {
         // Create link configuration
         var linkConfiguration = LinkTokenConfiguration(

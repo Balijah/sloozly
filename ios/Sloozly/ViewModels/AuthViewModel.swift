@@ -1,5 +1,5 @@
 import Foundation
-import FirebaseAuth
+@preconcurrency import FirebaseAuth
 import Combine
 
 // MARK: - Auth View Model
@@ -17,9 +17,9 @@ final class AuthViewModel: ObservableObject {
         setupAuthStateListener()
     }
     
-    deinit {
+    isolated deinit {
         if let handle = authStateHandle {
-            AuthService.shared.removeAuthStateListener(handle)
+            Auth.auth().removeStateDidChangeListener(handle)
         }
     }
     

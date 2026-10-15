@@ -63,7 +63,7 @@ xcodebuild test \
 Tests cover:
 - `OccurrenceIDGeneratorTests` — deterministic ID generation, parsing
 - `SnoozeEventStoreTests` — file persistence, queries, pruning
-- `SnoozeEventQueueTests` — idempotency, pending counts, retry backoff
+- `SnoozeEventQueueTests` — duplicate prevention, crash recovery, permanent failures, in-flight enqueue
 - `UUIDv5Tests` — stable UUID generation for AlarmKit alarm IDs
 
 ---
@@ -72,51 +72,28 @@ Tests cover:
 
 ### AlarmKit Flow
 
+```text
+AlarmModel → AlarmKitManager → AlarmManager.shared.schedule()
+                                      │
+                        ┌─────────────┼──────────────┐
+                        ▼             ▼              ▼
+                   Stop intent   Snooze intent   alarmUpdates
+                        │             │              │
+                        │       Persist event     UI state only
+                        │             │
+                        └──────→ SnoozeEventQueue
+                                      │
+                           POST /penalties/trigger
 ```
-┌─────────────┐    schedule    ┌─────────────────┐
-│ AlarmModel   │──────────────▶│  AlarmKitManager │
-│ (backend)    │               │  .scheduleAlarm()│
-└─────────────┘               └────────┬──────────┘
-                                       │
-                          AlarmManager.shared.schedule()
-                                       │
-                                       ▼
-                              ┌────────────────┐
-                              │  iOS AlarmKit   │
-                              │  (system alarm) │
-                              └───────┬────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    │ user taps       │ user taps        │ state change
-                    │ "I'm Up!"       │ "Snooze ($5)"    │ observed
-                    ▼                 ▼                  ▼
-              StopAlarmIntent   SnoozeAlarmIntent   alarmUpdates
-              (LiveActivity     (LiveActivity        (AsyncSequence)
-               Intent)           Intent)
-                    │                 │                  │
-                    │                 ▼                  │
-                    │     OccurrenceIDGenerator          │
-                    │          .generate()               │
-                    │                 │                  │
-                    │                 ▼                  │
-                    │        SnoozeEventStore            │
-                    │          .append()                 │
-                    │                 │                  │
-                    │                 ▼                  │
-                    └───────▶ SnoozeEventQueue ◀────────┘
-                              .processQueue()
-                                      │
-                                      ▼
-                              APIService.shared
-                              .triggerPenalty()
-                                      │
-                              ┌───────┴───────┐
-                              │  Backend API  │
-                              │  POST /api/   │
-                              │  penalties/   │
-                              │  trigger      │
-                              └───────────────┘
-```
+
+Only `SnoozeAlarmIntent` records snoozes. State observation updates the UI;
+it never creates another penalty for the same tap. Interrupted `.sending` events
+are recovered as pending when the store reloads, preserving their occurrence ID
+and snooze number. Permanently failed events are excluded from retries.
+
+CI builds both targets and runs the simulator unit tests with a generated dummy
+Firebase configuration. Device alarm delivery and real sandbox debits still need
+the manual checks below.
 
 ### Key Components
 

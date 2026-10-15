@@ -8,8 +8,8 @@ import Foundation
 /// The alarm's `secondaryButtonBehavior: .countdown` handles restarting the
 /// countdown automatically; this intent handles the business logic.
 public struct SnoozeAlarmIntent: LiveActivityIntent {
-    public static var title: LocalizedStringResource = "Snooze Alarm"
-    public static var description = IntentDescription("Snoozes the alarm and records a penalty")
+    public static let title: LocalizedStringResource = "Snooze Alarm"
+    public static let description = IntentDescription("Snoozes the alarm and records a penalty")
 
     @Parameter(title: "Alarm ID")
     public var alarmID: String
@@ -27,6 +27,7 @@ public struct SnoozeAlarmIntent: LiveActivityIntent {
         self.backendAlarmID = ""
     }
 
+    @MainActor
     public func perform() async throws -> some IntentResult {
         let occurrenceId = OccurrenceIDGenerator.generate(alarmId: backendAlarmID)
         let store = SnoozeEventStore.shared

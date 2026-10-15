@@ -7,8 +7,7 @@ import SwiftUI
 /// Responsibilities:
 /// - Request and observe AlarmKit authorization
 /// - Schedule / cancel / snooze alarms via `AlarmManager`
-/// - Observe `alarmUpdates` to detect snooze/dismiss events
-/// - Generate durable occurrence IDs and persist snooze events
+/// - Observe `alarmUpdates` for UI state; only the snooze intent records penalties
 @MainActor
 final class AlarmKitManager: ObservableObject {
 
@@ -18,17 +17,12 @@ final class AlarmKitManager: ObservableObject {
     @Published var currentAlarmState: Alarm.State?
     @Published var isAlarmScheduled = false
 
-    private let snoozeQueue: SnoozeEventQueue
-    private let eventStore: SnoozeEventStore
     private var observationTask: Task<Void, Never>?
     private var authObservationTask: Task<Void, Never>?
 
     private var activeAlarmUUID: UUID?
-    private var activeBackendAlarmId: String?
 
     private init() {
-        self.snoozeQueue = .shared
-        self.eventStore = .shared
         self.authorizationState = AlarmManager.shared.authorizationState
     }
 
@@ -69,7 +63,7 @@ final class AlarmKitManager: ObservableObject {
     /// - Returns: `true` if scheduling succeeded.
     @discardableResult
     func scheduleAlarm(_ alarm: AlarmModel) async -> Bool {
-        guard authorizationState == .authorized else {
+        if authorizationState != .authorized {
             let state = await requestAuthorization()
             guard state == .authorized else { return false }
         }
@@ -90,7 +84,7 @@ final class AlarmKitManager: ObservableObject {
             if weekdays.isEmpty {
                 recurrence = .never
             } else {
-                recurrence = .weekly(Set(weekdays))
+                recurrence = .weekly(weekdays)
             }
             let relative = Alarm.Schedule.Relative(time: time, repeats: recurrence)
             schedule = .relative(relative)
@@ -111,7 +105,7 @@ final class AlarmKitManager: ObservableObject {
         let title = alarm.label ?? "Time to Wake Up!"
 
         let alertPresentation = AlarmPresentation.Alert(
-            title: title,
+            title: LocalizedStringResource(stringLiteral: title),
             stopButton: stopButton,
             secondaryButton: snoozeButton,
             secondaryButtonBehavior: .countdown
@@ -153,7 +147,7 @@ final class AlarmKitManager: ObservableObject {
             backendAlarmID: alarm.id
         )
 
-        let configuration = AlarmManager.AlarmConfiguration(
+        let configuration = AlarmManager.AlarmConfiguration<SloozlyAlarmMetadata>(
             countdownDuration: countdownDuration,
             schedule: schedule,
             attributes: attributes,
@@ -168,7 +162,6 @@ final class AlarmKitManager: ObservableObject {
                 configuration: configuration
             )
             activeAlarmUUID = alarmUUID
-            activeBackendAlarmId = alarm.id
             isAlarmScheduled = true
             startAlarmObservation()
             return true
@@ -183,13 +176,12 @@ final class AlarmKitManager: ObservableObject {
     func cancelAlarm(_ alarm: AlarmModel) async {
         let alarmUUID = stableUUID(for: alarm.id)
         do {
-            try await AlarmManager.shared.cancel(id: alarmUUID)
+            try AlarmManager.shared.cancel(id: alarmUUID)
         } catch {
             print("Failed to cancel AlarmKit alarm: \(error.localizedDescription)")
         }
         if activeAlarmUUID == alarmUUID {
             activeAlarmUUID = nil
-            activeBackendAlarmId = nil
             isAlarmScheduled = false
             currentAlarmState = nil
         }
@@ -208,34 +200,14 @@ final class AlarmKitManager: ObservableObject {
     }
 
     private func handleAlarmUpdates(_ alarms: [AlarmKit.Alarm]) async {
-        guard let uuid = activeAlarmUUID,
-              let backendId = activeBackendAlarmId else { return }
+        guard let uuid = activeAlarmUUID else { return }
 
         guard let alarm = alarms.first(where: { $0.id == uuid }) else {
             currentAlarmState = nil
             return
         }
 
-        let previousState = currentAlarmState
         currentAlarmState = alarm.state
-
-        if previousState == .alert && alarm.state == .countdown {
-            await handleSnoozeDetected(backendAlarmId: backendId)
-        }
-    }
-
-    /// Fallback snooze detection via `alarmUpdates`.
-    /// The primary path is through `SnoozeAlarmIntent`, but this handles
-    /// cases where the intent might not fire (e.g. after device restart).
-    private func handleSnoozeDetected(backendAlarmId: String) async {
-        let occurrenceId = OccurrenceIDGenerator.generate(alarmId: backendAlarmId)
-        let snoozeNumber = eventStore.snoozeCount(for: occurrenceId) + 1
-
-        await snoozeQueue.recordSnooze(
-            alarmId: backendAlarmId,
-            occurrenceId: occurrenceId,
-            snoozeNumber: snoozeNumber
-        )
     }
 
     // MARK: - Helpers
@@ -277,7 +249,7 @@ final class AlarmKitManager: ObservableObject {
 extension UUID {
     /// Generate a v5 UUID from a namespace UUID and a name string.
     static func v5(namespace: UUID, name: String) -> UUID {
-        var namespaceBytes = withUnsafeBytes(of: namespace.uuid) { Array($0) }
+        let namespaceBytes = withUnsafeBytes(of: namespace.uuid) { Array($0) }
         let nameBytes = [UInt8](name.utf8)
 
         var input = namespaceBytes

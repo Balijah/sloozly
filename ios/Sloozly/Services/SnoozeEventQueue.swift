@@ -1,9 +1,10 @@
 import Foundation
+import Combine
 
 /// Processes pending snooze events, sending them to the backend with retry.
 ///
 /// - Events are persisted in `SnoozeEventStore` so they survive app termination.
-/// - On each `processQueue()` call, all pending/failed events are attempted.
+/// - On each `processQueue()` call, all pending events are attempted.
 /// - Exponential backoff is applied per-event based on `retryCount`.
 /// - Events that succeed are marked `.sent`; events that permanently fail
 ///   (e.g. 4xx from backend) are marked `.failed` and not retried.
@@ -27,11 +28,22 @@ final class SnoozeEventQueue: ObservableObject {
     }
 
     private let store: SnoozeEventStore
+    private let send: (SnoozeEvent) async throws -> TriggerPenaltyResponse
     private let maxRetries = 10
     private var isProcessing = false
 
-    init(store: SnoozeEventStore = .shared) {
+    init(
+        store: SnoozeEventStore = .shared,
+        send: @escaping (SnoozeEvent) async throws -> TriggerPenaltyResponse = { event in
+            try await APIService.shared.triggerPenalty(
+                alarmId: event.alarmId,
+                occurrenceId: event.occurrenceId,
+                snoozeNumber: event.snoozeNumber
+            )
+        }
+    ) {
         self.store = store
+        self.send = send
     }
 
     // MARK: - Record & Send
@@ -58,9 +70,7 @@ final class SnoozeEventQueue: ObservableObject {
         isProcessing = true
         defer { isProcessing = false }
 
-        let pending = store.pendingEvents()
-        for event in pending {
-            guard shouldRetry(event) else { continue }
+        while let event = store.pendingEvents().first(where: shouldRetry) {
             await sendEvent(event)
         }
     }
@@ -85,11 +95,7 @@ final class SnoozeEventQueue: ObservableObject {
         store.update(mutableEvent)
 
         do {
-            let response = try await APIService.shared.triggerPenalty(
-                alarmId: event.alarmId,
-                occurrenceId: event.occurrenceId,
-                snoozeNumber: event.snoozeNumber
-            )
+            let response = try await send(event)
 
             mutableEvent.status = .sent
             store.update(mutableEvent)

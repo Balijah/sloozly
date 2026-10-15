@@ -4,12 +4,12 @@ import Foundation
 ///
 /// Events are stored as a JSON array in the app's Application Support directory.
 /// This survives app restarts and enables offline retry.
-final class SnoozeEventStore {
+final class SnoozeEventStore: @unchecked Sendable {
 
     static let shared = SnoozeEventStore()
 
     private let fileManager = FileManager.default
-    private let queue = DispatchQueue(label: "com.sloozly.snooze-store", qos: .utility)
+    private let lock = NSRecursiveLock()
     private var cachedEvents: [SnoozeEvent]?
 
     private var storeURL: URL {
@@ -34,6 +34,8 @@ final class SnoozeEventStore {
     // MARK: - Read
 
     func loadEvents() -> [SnoozeEvent] {
+        lock.lock()
+        defer { lock.unlock() }
         if let cached = cachedEvents { return cached }
 
         guard let data = try? Data(contentsOf: effectiveURL) else {
@@ -41,7 +43,11 @@ final class SnoozeEventStore {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let events = (try? decoder.decode([SnoozeEvent].self, from: data)) ?? []
+        var events = (try? decoder.decode([SnoozeEvent].self, from: data)) ?? []
+        // Only disk loads recover interrupted sends; active sends remain excluded.
+        for index in events.indices where events[index].status == .sending {
+            events[index].status = .pending
+        }
         cachedEvents = events
         return events
     }
@@ -49,6 +55,8 @@ final class SnoozeEventStore {
     // MARK: - Write
 
     func save(_ events: [SnoozeEvent]) {
+        lock.lock()
+        defer { lock.unlock() }
         cachedEvents = events
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -60,12 +68,16 @@ final class SnoozeEventStore {
     // MARK: - Convenience
 
     func append(_ event: SnoozeEvent) {
+        lock.lock()
+        defer { lock.unlock() }
         var events = loadEvents()
         events.append(event)
         save(events)
     }
 
     func update(_ event: SnoozeEvent) {
+        lock.lock()
+        defer { lock.unlock() }
         var events = loadEvents()
         if let index = events.firstIndex(where: { $0.id == event.id }) {
             events[index] = event
@@ -74,7 +86,7 @@ final class SnoozeEventStore {
     }
 
     func pendingEvents() -> [SnoozeEvent] {
-        loadEvents().filter { $0.status == .pending || $0.status == .failed }
+        loadEvents().filter { $0.status == .pending }
     }
 
     func eventsForOccurrence(_ occurrenceId: String) -> [SnoozeEvent] {
@@ -93,6 +105,8 @@ final class SnoozeEventStore {
 
     /// Remove events older than the given number of days.
     func pruneOldEvents(olderThanDays days: Int = 30) {
+        lock.lock()
+        defer { lock.unlock() }
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
         let events = loadEvents().filter { $0.timestamp > cutoff }
         save(events)

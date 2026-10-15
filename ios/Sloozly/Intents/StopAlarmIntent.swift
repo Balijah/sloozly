@@ -6,8 +6,8 @@ import Foundation
 ///
 /// This stops the alarm and resets the snooze state for the current occurrence.
 public struct StopAlarmIntent: LiveActivityIntent {
-    public static var title: LocalizedStringResource = "Stop Alarm"
-    public static var description = IntentDescription("Stops the alarm")
+    public static let title: LocalizedStringResource = "Stop Alarm"
+    public static let description = IntentDescription("Stops the alarm")
 
     @Parameter(title: "Alarm ID")
     public var alarmID: String

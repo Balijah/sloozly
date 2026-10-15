@@ -18,6 +18,16 @@ final class SnoozeEventStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    func testInterruptedSendIsRetriedAfterReload() {
+        var event = makeEvent(alarmId: "a1", occurrenceId: "occ1", snoozeNumber: 1)
+        event.status = .sending
+        store.append(event)
+        XCTAssertTrue(store.pendingEvents().isEmpty, "Do not retry an active request")
+        let restarted = SnoozeEventStore(fileURL: tempURL)
+        XCTAssertEqual(restarted.pendingEvents().map(\.id), [event.id])
+        XCTAssertEqual(restarted.snoozeCount(for: "occ1"), 1)
+    }
+
     // MARK: - Basic CRUD
 
     func testEmptyStoreReturnsNoEvents() {
@@ -78,7 +88,7 @@ final class SnoozeEventStoreTests: XCTestCase {
         store.append(failed)
 
         let pendingEvents = store.pendingEvents()
-        XCTAssertEqual(pendingEvents.count, 2, "Should include pending and failed events")
+        XCTAssertEqual(pendingEvents.count, 1, "Permanent failures must not retry")
     }
 
     func testEventsForOccurrence() {
