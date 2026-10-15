@@ -1,0 +1,42 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios-ci.yml']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios-ci.yml']
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - name: Create dummy Firebase configuration for the test host
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          config = {
+              'GOOGLE_APP_ID': '1:123456789012:ios:0123456789abcdef',
+              'GCM_SENDER_ID': '123456789012',
+              'API_KEY': 'AIza' + '0' * 35,
+              'PROJECT_ID': 'demo-sloozly-tests',
+              'BUNDLE_ID': 'com.sloozly.app',
+              'IS_ANALYTICS_ENABLED': False,
+              'IS_GCM_ENABLED': False,
+              'IS_SIGNIN_ENABLED': False,
+              'PLIST_VERSION': '1',
+          }
+          with open('ios/Sloozly/GoogleService-Info.plist', 'wb') as file:
+              plistlib.dump(config, file)
+          PY
+      - name: Generate project
+        run: xcodegen generate --spec ios/project.yml
+      - name: Build app and widget, then run unit tests
+        run: >-
+          xcodebuild test -project ios/Sloozly.xcodeproj -scheme Sloozly
+          -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest'
+          CODE_SIGNING_ALLOWED=NO

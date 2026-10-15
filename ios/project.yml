@@ -1,0 +1,100 @@
+name: Sloozly
+options:
+  bundleIdPrefix: com.sloozly
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26"
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+
+targets:
+
+  # ─── Main App ──────────────────────────────────────────────
+  Sloozly:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sloozly
+        excludes:
+          - "**/*.xcodeproj"
+    settings:
+      base:
+        INFOPLIST_FILE: Sloozly/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.sloozly.app
+        CODE_SIGN_ENTITLEMENTS: Sloozly/Sloozly.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"     # iPhone only
+        SWIFT_STRICT_CONCURRENCY: complete
+    dependencies:
+      - target: SloozlyWidgetExtension
+      - package: Firebase
+        product: FirebaseAuth
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseMessaging
+      - package: PlaidLink
+        product: LinkKit
+    entitlements:
+      path: Sloozly/Sloozly.entitlements
+    postBuildScripts: []
+
+  # ─── Widget Extension (Live Activity for AlarmKit) ─────────
+  SloozlyWidgetExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SloozlyWidgetExtension
+      - path: Sloozly/Models/SloozlyAlarmMetadata.swift
+    settings:
+      base:
+        INFOPLIST_FILE: SloozlyWidgetExtension/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.sloozly.app.widget
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_STRICT_CONCURRENCY: complete
+    entitlements:
+      path: SloozlyWidgetExtension/SloozlyWidgetExtension.entitlements
+
+  # ─── Unit Tests ────────────────────────────────────────────
+  SloozlyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: SloozlyTests
+    settings:
+      base:
+        INFOPLIST_FILE: SloozlyTests/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.sloozly.app.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Sloozly.app/Sloozly"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Sloozly
+
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    from: "11.0.0"
+  PlaidLink:
+    url: https://github.com/plaid/plaid-link-ios
+    from: "5.0.0"
+
+schemes:
+  Sloozly:
+    build:
+      targets:
+        Sloozly: all
+        SloozlyWidgetExtension: all
+        SloozlyTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SloozlyTests
+    archive:
+      config: Release

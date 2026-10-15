@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Environment Configuration
 
-enum Environment {
+enum AppEnvironment {
     static var current: EnvironmentType {
         #if DEBUG
         return .development
@@ -39,15 +39,15 @@ enum Environment {
 
 enum Constants {
     // API
-    static let apiBaseURL = Environment.current.apiBaseURL
+    static let apiBaseURL = AppEnvironment.current.apiBaseURL
     static let apiTimeout: TimeInterval = 30
     
     // Plaid
-    static let plaidEnv = Environment.current.plaidEnv
+    static let plaidEnv = AppEnvironment.current.plaidEnv
     
     // Alarm
     static let defaultPenaltyAmountCents = 500 // $5.00
-    static let maxPenaltyAmountCents = 5000 // $50.00
+    static let maxPenaltyAmountCents = 2500 // $25.00 daily cap
     static let maxSnoozeCount = 20
     static let defaultSnoozeDurationMinutes = 9
     

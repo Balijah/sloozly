@@ -1,8 +1,9 @@
 import Foundation
 
 // MARK: - Alarm Model
+// Named `AlarmModel` to avoid conflict with AlarmKit's `Alarm` type.
 
-struct Alarm: Codable, Identifiable {
+struct AlarmModel: Codable, Identifiable {
     let id: String
     var hour: Int
     var minute: Int
@@ -34,8 +35,9 @@ struct Alarm: Codable, Identifiable {
         return "\(String(format: "%02d", hour)):\(String(format: "%02d", minute))"
     }
     
+    /// Flat penalty amount from server config, displayed as a formatted string.
     var penaltyAmountFormatted: String {
-        String(format: "$%.2f", Double(Constants.defaultPenaltyAmountCents) / 100)
+        Constants.defaultPenaltyAmountCents.centsToUSD
     }
     
     var repeatDaysText: String {
@@ -72,17 +74,15 @@ struct Alarm: Codable, Identifiable {
             return nil
         }
         
-        // If time has passed today, move to tomorrow
         if alarmDate <= now {
             alarmDate = calendar.date(byAdding: .day, value: 1, to: alarmDate) ?? alarmDate
         }
         
-        // For repeating alarms, find the next valid day
         if !repeatDays.isEmpty {
             var daysToAdd = 0
             while daysToAdd < 7 {
                 let checkDate = calendar.date(byAdding: .day, value: daysToAdd, to: alarmDate) ?? alarmDate
-                let weekday = calendar.component(.weekday, from: checkDate) - 1 // Convert to 0-indexed
+                let weekday = calendar.component(.weekday, from: checkDate) - 1
                 
                 if repeatDays.contains(weekday) {
                     return checkDate

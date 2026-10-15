@@ -1,8 +1,9 @@
 import Foundation
-import FirebaseAuth
+@preconcurrency import FirebaseAuth
 
 // MARK: - Auth Service
 
+@MainActor
 final class AuthService {
     static let shared = AuthService()
     
@@ -135,9 +136,6 @@ final class AuthService {
         }
     }
     
-    func removeAuthStateListener(_ handle: AuthStateDidChangeListenerHandle) {
-        Auth.auth().removeStateDidChangeListener(handle)
-    }
 }
 
 // MARK: - Auth Errors

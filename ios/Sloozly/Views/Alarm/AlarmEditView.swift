@@ -3,7 +3,7 @@ import SwiftUI
 struct AlarmEditView: View {
     enum Mode {
         case create
-        case edit(Alarm)
+        case edit(AlarmModel)
         
         var title: String {
             switch self {
@@ -26,12 +26,10 @@ struct AlarmEditView: View {
         self.mode = mode
         self.onSave = onSave
         
-        // Initialize state from existing alarm if editing
         if case .edit(let alarm) = mode {
             _label = State(initialValue: alarm.label ?? "")
             _selectedDays = State(initialValue: alarm.repeatDays.asDayOfWeekSet)
             
-            // Set initial time
             var components = DateComponents()
             components.hour = alarm.hour
             components.minute = alarm.minute
@@ -44,7 +42,6 @@ struct AlarmEditView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // Time Picker
                 Section {
                     DatePicker(
                         "Time",
@@ -56,12 +53,10 @@ struct AlarmEditView: View {
                     .frame(maxWidth: .infinity)
                 }
                 
-                // Label
                 Section("Label") {
                     TextField("Alarm label (optional)", text: $label)
                 }
                 
-                // Repeat Days
                 Section("Repeat") {
                     ForEach(DayOfWeek.allCases, id: \.self) { day in
                         Button {
@@ -83,7 +78,6 @@ struct AlarmEditView: View {
                         }
                     }
                     
-                    // Quick select buttons
                     HStack(spacing: 12) {
                         Button("Weekdays") {
                             selectedDays = Set(DayOfWeek.weekdays)
@@ -112,16 +106,15 @@ struct AlarmEditView: View {
                     .padding(.vertical, 8)
                 }
                 
-                // Penalty info
                 Section {
                     HStack {
                         Image(systemName: "dollarsign.circle.fill")
                             .foregroundColor(.orange)
-                        Text("Snooze penalty: $5.00")
+                        Text("Snooze penalty: \(Constants.defaultPenaltyAmountCents.centsToUSD)")
                             .foregroundColor(.secondary)
                     }
                     
-                    Text("Each snooze doubles the penalty. First snooze is $5, second is $10, third is $20, and so on.")
+                    Text("Each snooze costs a flat \(Constants.defaultPenaltyAmountCents.centsToUSD) penalty. Daily cap of \(Constants.maxPenaltyAmountCents.centsToUSD) enforced by the server.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

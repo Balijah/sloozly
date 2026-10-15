@@ -9,31 +9,38 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Configure Firebase
         FirebaseApp.configure()
         
-        // Configure push notifications
-        configureNotifications(application)
+        // Register for remote (push) notifications only.
+        // Local alarm alerts are now handled by AlarmKit.
+        configurePushNotifications(application)
+        
+        // Prune old snooze events
+        SnoozeEventStore.shared.pruneOldEvents()
+        
+        // Process any pending snooze events from previous sessions
+        Task {
+            await SnoozeEventQueue.shared.processQueue()
+        }
         
         return true
     }
     
-    // MARK: - Push Notifications
+    // MARK: - Push Notifications (for server-sent alerts, not alarms)
     
-    private func configureNotifications(_ application: UIApplication) {
+    private func configurePushNotifications(_ application: UIApplication) {
         UNUserNotificationCenter.current().delegate = self
         
-        let authOptions: UNAuthorizationOptions = [.alert, .badge, .sound, .criticalAlert]
+        let authOptions: UNAuthorizationOptions = [.alert, .badge, .sound]
         UNUserNotificationCenter.current().requestAuthorization(options: authOptions) { granted, error in
             if let error = error {
-                print("Notification authorization error: \(error.localizedDescription)")
+                print("Push notification authorization error: \(error.localizedDescription)")
             }
-            print("Notification permission granted: \(granted)")
+            print("Push notification permission granted: \(granted)")
         }
         
         application.registerForRemoteNotifications()
         
-        // Configure Firebase Messaging
         Messaging.messaging().delegate = self
     }
     
@@ -52,57 +59,24 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
-// MARK: - UNUserNotificationCenterDelegate
+// MARK: - UNUserNotificationCenterDelegate (push notifications only)
 
 extension AppDelegate: UNUserNotificationCenterDelegate {
     
-    // Handle notification when app is in foreground
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // Show notification even when app is in foreground
         completionHandler([.banner, .sound, .badge])
     }
     
-    // Handle notification tap
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let userInfo = response.notification.request.content.userInfo
-        
-        // Handle different notification actions
-        switch response.actionIdentifier {
-        case "SNOOZE_ACTION":
-            handleSnoozeAction(userInfo: userInfo)
-        case "DISMISS_ACTION":
-            handleDismissAction(userInfo: userInfo)
-        default:
-            break
-        }
-        
         completionHandler()
-    }
-    
-    private func handleSnoozeAction(userInfo: [AnyHashable: Any]) {
-        // Post notification for AlarmService to handle
-        NotificationCenter.default.post(
-            name: .alarmSnoozed,
-            object: nil,
-            userInfo: userInfo
-        )
-    }
-    
-    private func handleDismissAction(userInfo: [AnyHashable: Any]) {
-        // Post notification for AlarmService to handle
-        NotificationCenter.default.post(
-            name: .alarmDismissed,
-            object: nil,
-            userInfo: userInfo
-        )
     }
 }
 
@@ -110,12 +84,17 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 
 extension AppDelegate: MessagingDelegate {
     
-    func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+    nonisolated func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
         guard let token = fcmToken else { return }
         print("FCM Token: \(token)")
         
-        // Send token to backend for push notifications (MMF feature)
-        // APIService.shared.updateFCMToken(token)
+        Task {
+            do {
+                try await APIService.shared.updateFCMToken(token)
+            } catch {
+                print("Failed to send FCM token to backend: \(error.localizedDescription)")
+            }
+        }
     }
 }
 

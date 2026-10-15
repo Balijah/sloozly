@@ -5,11 +5,11 @@ import Combine
 
 @MainActor
 final class AlarmViewModel: ObservableObject {
-    @Published var alarms: [Alarm] = []
+    @Published var alarms: [AlarmModel] = []
     @Published var isLoading = false
     @Published var error: String?
     
-    private let alarmService = AlarmService.shared
+    private let alarmKitManager = AlarmKitManager.shared
     
     // MARK: - Fetch Alarms
     
@@ -20,9 +20,9 @@ final class AlarmViewModel: ObservableObject {
         do {
             alarms = try await APIService.shared.listAlarms()
             
-            // Schedule all enabled alarms
+            // Schedule all enabled alarms via AlarmKit
             for alarm in alarms where alarm.isEnabled {
-                alarmService.scheduleAlarm(alarm)
+                await alarmKitManager.scheduleAlarm(alarm)
             }
         } catch {
             self.error = error.localizedDescription
@@ -49,8 +49,7 @@ final class AlarmViewModel: ObservableObject {
             alarms.append(alarm)
             alarms.sort { ($0.hour, $0.minute) < ($1.hour, $1.minute) }
             
-            // Schedule the alarm
-            alarmService.scheduleAlarm(alarm)
+            await alarmKitManager.scheduleAlarm(alarm)
             
             return true
         } catch {
@@ -61,7 +60,7 @@ final class AlarmViewModel: ObservableObject {
     
     // MARK: - Update Alarm
     
-    func updateAlarm(_ alarm: Alarm, hour: Int? = nil, minute: Int? = nil, label: String? = nil, isEnabled: Bool? = nil, repeatDays: [Int]? = nil, skipPenalty: Bool? = nil) async -> Bool {
+    func updateAlarm(_ alarm: AlarmModel, hour: Int? = nil, minute: Int? = nil, label: String? = nil, isEnabled: Bool? = nil, repeatDays: [Int]? = nil, skipPenalty: Bool? = nil) async -> Bool {
         error = nil
         
         let request = UpdateAlarmRequest(
@@ -76,17 +75,15 @@ final class AlarmViewModel: ObservableObject {
         do {
             let updatedAlarm = try await APIService.shared.updateAlarm(id: alarm.id, request)
             
-            // Update local array
             if let index = alarms.firstIndex(where: { $0.id == alarm.id }) {
                 alarms[index] = updatedAlarm
             }
             alarms.sort { ($0.hour, $0.minute) < ($1.hour, $1.minute) }
             
-            // Update scheduled notification
             if updatedAlarm.isEnabled {
-                alarmService.scheduleAlarm(updatedAlarm)
+                await alarmKitManager.scheduleAlarm(updatedAlarm)
             } else {
-                alarmService.cancelAlarm(updatedAlarm)
+                await alarmKitManager.cancelAlarm(updatedAlarm)
             }
             
             return true
@@ -98,23 +95,20 @@ final class AlarmViewModel: ObservableObject {
     
     // MARK: - Toggle Alarm
     
-    func toggleAlarm(_ alarm: Alarm) async {
+    func toggleAlarm(_ alarm: AlarmModel) async {
         _ = await updateAlarm(alarm, isEnabled: !alarm.isEnabled)
     }
     
     // MARK: - Delete Alarm
     
-    func deleteAlarm(_ alarm: Alarm) async -> Bool {
+    func deleteAlarm(_ alarm: AlarmModel) async -> Bool {
         error = nil
         
         do {
             try await APIService.shared.deleteAlarm(id: alarm.id)
             
-            // Remove from local array
             alarms.removeAll { $0.id == alarm.id }
-            
-            // Cancel scheduled notification
-            alarmService.cancelAlarm(alarm)
+            await alarmKitManager.cancelAlarm(alarm)
             
             return true
         } catch {

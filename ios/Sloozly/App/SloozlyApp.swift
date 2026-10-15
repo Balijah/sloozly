@@ -5,11 +5,18 @@ import FirebaseCore
 struct SloozlyApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var authViewModel = AuthViewModel()
+    @StateObject private var alarmKitManager = AlarmKitManager.shared
     
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(authViewModel)
+                .environmentObject(alarmKitManager)
+                .task {
+                    alarmKitManager.checkAuthorization()
+                    alarmKitManager.startAuthorizationObservation()
+                    alarmKitManager.startAlarmObservation()
+                }
         }
     }
 }
